@@ -329,3 +329,7 @@ button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; 
 .suggest-head { margin: 14px 0 6px; font-size: 0.95rem; }
 .suggestions { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .suggestion { width: 100%; justify-content: flex-start; text-align: left; gap: 10px; }
+
+/* Brick Architect label links */
+.ba-link { white-space: nowrap; }
+.ba-list .part-link { grid-template-columns: auto 1fr; }

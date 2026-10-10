@@ -23,7 +23,7 @@ Piece counts and colors aren't tracked. The app answers "which slot is it in?"
 | 📷 **Identify** | Take a photo of a part and get likely matches from [Brickognize](https://brickognize.com) (free, no key). Or look it up by number or name. Each result shows **which slot it goes in**, or offers to give it a slot. |
 | 🗄️ **Storage** | **Add a storage unit from a photo:** photograph a whole labeled cabinet, and Claude reads the layout and every Brick Architect label. You check each drawer (hard-to-read ones are highlighted) and fix anything before it's saved. Or add storage units (presets for common cabinets and cases) and see a map of each one. Tap a drawer to open its slot, where you can type the part numbers from its label (`3623, 63864`). Names are filled in for known parts. **← / →** steps through every slot in order, to catalog a whole cabinet in one go. Parts that have no slot yet are listed here too. |
 | 💡 **Suggested spots** | A part without a slot (on its page, or in Identify results) gets suggestions for where to put it, based on its shape: kind (plate, tile, brick…), size and details like "corner". First choice is a divided drawer with free compartments holding like pieces, then an empty drawer next to like pieces. Tap a suggestion to put the part there. |
-| 🏷️ **Labels** | Print labels for slots that need one (any slot whose contents changed) or for a whole unit. Choose a **full label** (code, part names and numbers) or a **code sticker** to put next to an existing Brick Architect label. |
+| 🏷️ **Labels** | Drawers whose contents changed go on a "Needs a label" list (or pick a whole unit). The default is **Brick Architect** labels: one official 12 mm P-touch label per part (`brickarchitect.com/label/<number>.lbx`), downloaded one by one or all at once, then printed from P-touch Editor. Each part's page and drawer page also link to its label, and a part can point at a different label number. The app's own slot-code and full labels are still available. |
 | ⚙️ **Settings** | Export/import the catalog to share between family devices (merge or replace), set the Rebrickable and Anthropic API keys, and load sample data. |
 
 Data saved by earlier versions of the app (bins with per-color counts) is converted automatically: each old bin becomes a slot of an "Imported bins" unit `Z`.
@@ -100,7 +100,8 @@ css/styles.css        mobile-first styles, dark mode, storage maps, printable la
 js/app.js             views and hash router (#/find, #/identify, #/part/:num, #/storage, #/unit/:id, #/slot/:id, #/labels, #/settings)
 js/store.js           data model (units, slots, parts), persistence, import/export/merge, v1 migration
 js/search.js          tokenized, scored search across numbers, names and slot codes
-js/sorting.js         guesses the kind of part from its name
+js/sorting.js         part kinds and shapes, "where should this go?" suggestions
+js/labels.js          Brick Architect label addresses
 js/identify.js        Brickognize photo recognition, Rebrickable lookups
 js/scan.js            reads a whole storage unit from a photo with Claude
 js/sync.js            family sharing: keeps the phone and the shared copy in step
