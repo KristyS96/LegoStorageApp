@@ -354,6 +354,39 @@ export function createStore(backend = defaultBackend()) {
       return state.parts.filter((p) => ![p.partNum, ...p.altNums].some((n) => homed.has(normNum(n))));
     },
 
+    /**
+     * Save a storage unit read from a photo, after review.
+     * @param unitInput { name, code, description }
+     * @param cells rows top to bottom, each a list of drawers left to right,
+     *   each drawer a list of { partNum, altNums, name }
+     * @param labeled true if the drawers already carry printed labels
+     */
+    addScannedUnit(unitInput, cells, { labeled = true } = {}) {
+      const unit = api.addUnit({ ...unitInput, rows: cells.map((row) => row.length) });
+      cells.forEach((row, r) =>
+        row.forEach((parts, c) => {
+          const id = slotId(unit.id, r + 1, c + 1);
+          for (const p of parts) {
+            if (!clean(p.partNum)) continue;
+            const part = api.ensurePart(p.partNum, { silent: true });
+            // Names and alternates read from the label fill gaps; never overwrite what the family typed.
+            if (!part.name && clean(p.name)) {
+              part.name = clean(p.name);
+              part.category = guessCategory(part.name) || part.category;
+            }
+            part.altNums = parseNums([...part.altNums, ...(p.altNums ?? [])]).filter(
+              (n) => normNum(n) !== normNum(part.partNum),
+            );
+            part.updatedAt = Date.now();
+          }
+          const nums = parts.map((p) => api.getPart(p.partNum)?.partNum).filter(Boolean);
+          if (nums.length) state.slots.push(normalizeSlot({ unitId: unit.id, row: r + 1, col: c + 1, partNums: nums, needsLabel: !labeled }));
+        }),
+      );
+      commit();
+      return unit;
+    },
+
     // --- Settings ---
     updateSettings(patch) {
       state.settings = { ...state.settings, ...patch };
@@ -363,7 +396,7 @@ export function createStore(backend = defaultBackend()) {
     // --- Import / export (share between family devices) ---
     exportJSON() {
       // API keys are personal; don't hand them around in shared files.
-      const { rebrickableKey, ...shareable } = state.settings;
+      const { rebrickableKey, anthropicKey, ...shareable } = state.settings;
       return JSON.stringify({ ...state, settings: shareable, exportedAt: new Date().toISOString() }, null, 2);
     },
     importJSON(text, { merge = false } = {}) {
@@ -398,6 +431,8 @@ export function createStore(backend = defaultBackend()) {
   return api;
 }
 
+const PRIVATE_SETTINGS = ['rebrickableKey', 'anthropicKey'];
+
 function pickPrivate(settings) {
-  return settings.rebrickableKey ? { rebrickableKey: settings.rebrickableKey } : {};
+  return Object.fromEntries(PRIVATE_SETTINGS.filter((k) => settings[k]).map((k) => [k, settings[k]]));
 }

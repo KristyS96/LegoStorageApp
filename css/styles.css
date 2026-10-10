@@ -303,3 +303,19 @@ a.chip { color: var(--text); text-decoration: none; }
   .labels { grid-template-columns: repeat(3, 1fr); }
   .labels.codes { grid-template-columns: repeat(8, 1fr); }
 }
+
+/* Add a storage unit from a photo */
+.btn.wide { display: flex; width: 100%; margin-bottom: 12px; }
+.primary-outline { border: 2px solid var(--red); color: var(--red); font-weight: 700; }
+.notice { background: #fff6d6; color: #5a4300; border-radius: 8px; padding: 10px 12px; }
+.card.notice { border-color: var(--yellow); }
+.scan-photo { display: block; max-width: 100%; max-height: 320px; margin: 10px auto 0; border-radius: 8px; }
+button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; cursor: pointer; }
+.review-cell { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 6px; border-radius: 8px; }
+.review-cell .slot-badge { margin-top: 9px; }
+.review-cell input { padding: 8px 10px; }
+.review-cell small { display: block; margin-top: 2px; }
+.review-cell.uncertain { background: #fff6d6; }
+@media (prefers-color-scheme: dark) {
+  .notice, .review-cell.uncertain { background: #3d3410; color: #f6e7b0; }
+}
