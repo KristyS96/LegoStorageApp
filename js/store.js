@@ -396,7 +396,7 @@ export function createStore(backend = defaultBackend()) {
     // --- Import / export (share between family devices) ---
     exportJSON() {
       // API keys are personal; don't hand them around in shared files.
-      const { rebrickableKey, anthropicKey, ...shareable } = state.settings;
+      const shareable = Object.fromEntries(Object.entries(state.settings).filter(([k]) => !PRIVATE_SETTINGS.includes(k)));
       return JSON.stringify({ ...state, settings: shareable, exportedAt: new Date().toISOString() }, null, 2);
     },
     importJSON(text, { merge = false } = {}) {
@@ -423,6 +423,13 @@ export function createStore(backend = defaultBackend()) {
       }
       commit();
     },
+    // Replace the catalog with the family's shared copy (settings stay local).
+    replaceData({ units = [], slots = [], parts = [] }) {
+      state = { ...validateImport({ version: SCHEMA_VERSION, units, slots, parts }), settings: state.settings };
+      // The database returns items in ID order; show storage units in letter order.
+      state.units.sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      commit();
+    },
     reset() {
       state = { ...emptyState(), settings: pickPrivate(state.settings) };
       commit();
@@ -431,7 +438,8 @@ export function createStore(backend = defaultBackend()) {
   return api;
 }
 
-const PRIVATE_SETTINGS = ['rebrickableKey', 'anthropicKey'];
+// Per-device settings: never exported, kept through a replace import.
+const PRIVATE_SETTINGS = ['rebrickableKey', 'anthropicKey', 'syncLinked'];
 
 function pickPrivate(settings) {
   return Object.fromEntries(PRIVATE_SETTINGS.filter((k) => settings[k]).map((k) => [k, settings[k]]));

@@ -319,3 +319,7 @@ button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; 
 @media (prefers-color-scheme: dark) {
   .notice, .review-cell.uncertain { background: #3d3410; color: #f6e7b0; }
 }
+
+/* Family sharing */
+.header-right { display: flex; align-items: baseline; gap: 8px; }
+.sync-status { text-decoration: none; font-size: 1rem; }

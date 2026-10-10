@@ -7,13 +7,15 @@
   "scripts": {
     "start": "node scripts/serve.js",
     "test": "node --test tests/*.test.js",
-    "vendor:sdk": "esbuild scripts/anthropic-sdk-entry.js --bundle --format=esm --platform=browser --minify --legal-comments=eof --outfile=js/vendor/anthropic-sdk.js"
+    "vendor:sdk": "esbuild scripts/anthropic-sdk-entry.js --bundle --format=esm --platform=browser --minify --legal-comments=eof --outfile=js/vendor/anthropic-sdk.js",
+    "vendor:firebase": "esbuild scripts/firebase-entry.js --bundle --format=esm --platform=browser --minify --legal-comments=eof --outfile=js/vendor/firebase.js"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.133.0",
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "firebase": "13.0.0"
   }
 }

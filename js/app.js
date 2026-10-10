@@ -6,6 +6,9 @@ import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
+import { createSync } from './sync.js';
+import { connectFirebase, syncErrorMessage } from './firebase-backend.js';
+import { FIREBASE_CONFIG, FAMILY_ID } from './firebase-config.js';
 
 const store = createStore();
 const view = document.getElementById('view');
@@ -920,6 +923,194 @@ function renderLabels({ params }) {
   });
 }
 
+// ---------- Family sharing ----------
+
+const sharing = {
+  conn: null, // Firebase connection, loaded only when needed
+  loading: null,
+  user: undefined, // undefined = not known yet, null = signed out
+  sync: null,
+  status: null, // { state, error? } from the sync engine
+  error: '',
+  linkInfo: null, // first-time comparison of this phone vs the shared copy
+};
+let refreshPending = false;
+
+function sharingLinked() {
+  return Boolean(store.state.settings.syncLinked);
+}
+
+function updateSyncBadge() {
+  const el = document.getElementById('sync-status');
+  if (!el) return;
+  let icon = '';
+  let title = '';
+  if (sharingLinked()) {
+    if (sharing.user === null) [icon, title] = ['⚠️', 'Signed out: changes are not shared'];
+    else if (sharing.status?.state === 'error') [icon, title] = ['⚠️', sharing.error];
+    else if (sharing.status?.state === 'saving') [icon, title] = ['⏳', 'Saving to the family catalog…'];
+    else if (sharing.status?.state === 'synced') [icon, title] = ['☁️', 'Shared with the family'];
+  }
+  el.textContent = icon;
+  el.title = title;
+  el.hidden = !icon;
+}
+
+// Another phone changed something: redraw, unless someone is typing or reviewing a photo.
+function refreshForRemote() {
+  if (parseRoute().name === 'scan') return;
+  const active = document.activeElement;
+  if (active && view.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) {
+    refreshPending = true;
+    return;
+  }
+  render();
+}
+
+function connectSharing() {
+  if (!FIREBASE_CONFIG) return Promise.resolve(null);
+  sharing.loading ??= connectFirebase(FIREBASE_CONFIG, FAMILY_ID)
+    .then((conn) => {
+      sharing.conn = conn;
+      conn.onUser((user) => {
+        sharing.user = user;
+        sharing.sync?.stop();
+        sharing.sync = null;
+        sharing.linkInfo = null;
+        if (user && sharingLinked()) {
+          sharing.sync = newSync();
+          sharing.sync.resume();
+        }
+        updateSyncBadge();
+        if (parseRoute().name === 'settings') renderSettings();
+      });
+      return conn;
+    })
+    .catch((err) => {
+      sharing.error = syncErrorMessage(err);
+      sharing.loading = null;
+      updateSyncBadge();
+      return null;
+    });
+  return sharing.loading;
+}
+
+function newSync() {
+  return createSync(store, sharing.conn.backend, {
+    onStatus: (status) => {
+      sharing.status = status;
+      sharing.error = status.error ? syncErrorMessage(status.error) : '';
+      updateSyncBadge();
+      if (parseRoute().name === 'settings' && document.getElementById('share-status')) {
+        document.getElementById('share-status').textContent = sharingStatusText();
+      }
+    },
+    onRemoteChange: refreshForRemote,
+  });
+}
+
+function sharingStatusText() {
+  if (sharing.error) return `⚠️ ${sharing.error}`;
+  if (sharing.status?.state === 'saving') return '⏳ Saving…';
+  return navigator.onLine === false ? "📴 Offline: changes will sync when you're back online." : '☁️ Up to date.';
+}
+
+function sharingCardHtml() {
+  const head = '<h3 style="margin-top:0">Family sharing</h3>';
+  if (!FIREBASE_CONFIG) {
+    return `${head}<p class="muted">Sharing isn't set up yet. Once the family's Firebase project is connected
+      (see "Family sharing" in the README), everyone signs in here and sees the same catalog.</p>`;
+  }
+  if (!sharing.conn) {
+    return `${head}<p class="muted">Share one catalog with the family: sign in with Google and every change
+      shows up on everyone's phone.</p>
+      ${sharing.error ? `<p class="notice">⚠️ ${esc(sharing.error)}</p>` : ''}
+      <div class="actions"><button class="primary" id="share-start">Set up sharing on this phone</button></div>`;
+  }
+  if (!sharing.user) {
+    return `${head}<p class="muted">${sharingLinked() ? 'This phone is signed out, so changes are not being shared.' : 'Sign in with a family Google account.'}</p>
+      ${sharing.error ? `<p class="notice">⚠️ ${esc(sharing.error)}</p>` : ''}
+      <div class="actions"><button class="primary" id="share-signin">Sign in with Google</button></div>`;
+  }
+  const who = `<p>Signed in as <strong>${esc(sharing.user.email)}</strong></p>`;
+  const signOut = `<button id="share-signout">${sharingLinked() ? 'Sign out and stop sharing on this phone' : 'Sign out'}</button>`;
+  if (sharingLinked()) {
+    return `${head}${who}<p id="share-status">${esc(sharingStatusText())}</p><div class="actions">${signOut}</div>`;
+  }
+  const info = sharing.linkInfo;
+  if (!info) return `${head}${who}<p class="muted">Checking the family catalog…</p><div class="actions">${signOut}</div>`;
+  if (info.error) return `${head}${who}<p class="notice">⚠️ ${esc(info.error)}</p><div class="actions">${signOut}</div>`;
+  const mine = `${store.state.units.length} storage units and ${store.state.parts.length} parts`;
+  const theirs = `${info.remote.units.length} storage units and ${info.remote.parts.length} parts`;
+  let choice;
+  if (info.remoteEmpty) {
+    choice = `<p>The family catalog is empty. Start it with this phone's catalog (${mine}).</p>
+      <div class="actions"><button class="primary" data-link="combine">Start sharing</button>${signOut}</div>`;
+  } else if (info.localEmpty) {
+    choice = `<p>The family catalog has ${theirs}.</p>
+      <div class="actions"><button class="primary" data-link="shared">Use the family catalog</button>${signOut}</div>`;
+  } else {
+    choice = `<p>The family catalog has ${theirs}. This phone has ${mine}.</p>
+      <div class="actions">
+        <button class="primary" data-link="combine">Combine them</button>
+        <button data-link="shared">Use the family catalog (replace this phone's)</button>
+        ${signOut}
+      </div>`;
+  }
+  return `${head}${who}${choice}`;
+}
+
+function wireSharingCard() {
+  view.querySelector('#share-start')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Loading…';
+    await connectSharing();
+    renderSettings();
+  });
+  view.querySelector('#share-signin')?.addEventListener('click', async () => {
+    try {
+      await sharing.conn.signIn();
+    } catch (err) {
+      sharing.error = syncErrorMessage(err);
+      renderSettings();
+    }
+  });
+  view.querySelector('#share-signout')?.addEventListener('click', async () => {
+    sharing.sync?.stop();
+    sharing.sync = null;
+    store.updateSettings({ syncLinked: false });
+    await sharing.conn.signOut();
+    toast('Signed out. This phone keeps its own copy.');
+  });
+  view.querySelectorAll('[data-link]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.link;
+      if (mode === 'shared' && store.state.parts.length && !confirm("Replace this phone's catalog with the family catalog?")) return;
+      view.querySelectorAll('[data-link]').forEach((b) => (b.disabled = true));
+      try {
+        sharing.sync = newSync();
+        await sharing.sync.link(mode, sharing.linkInfo.remote);
+        toast('Sharing is on');
+      } catch (err) {
+        sharing.sync?.stop();
+        sharing.sync = null;
+        toast(syncErrorMessage(err));
+      }
+      sharing.linkInfo = null;
+      updateSyncBadge();
+      renderSettings();
+    }),
+  );
+  // First sign-in on this phone: compare with the shared copy before linking.
+  if (sharing.user && !sharingLinked() && !sharing.linkInfo) {
+    createSync(store, sharing.conn.backend)
+      .inspect()
+      .then((info) => (sharing.linkInfo = info))
+      .catch((err) => (sharing.linkInfo = { error: syncErrorMessage(err) }))
+      .then(() => parseRoute().name === 'settings' && renderSettings());
+  }
+}
+
 // ---------- Settings ----------
 
 function download(filename, text) {
@@ -932,6 +1123,7 @@ function download(filename, text) {
 function renderSettings() {
   view.innerHTML = `
     <h2>Settings</h2>
+    <div class="card" id="share-card">${sharingCardHtml()}</div>
     <div class="card">
       <h3 style="margin-top:0">Share with the family</h3>
       <p class="muted">The catalog is saved on this device. Export a file and open it on another
@@ -995,13 +1187,18 @@ function renderSettings() {
     });
     toast('Saved');
   });
+  wireSharingCard();
   view.querySelector('#sample').addEventListener('click', () => {
-    if (store.state.parts.length && !confirm('Add the sample storage units and parts to your catalog?')) return;
+    const where = sharingLinked() ? 'the family catalog (everyone will see them)' : 'your catalog';
+    if ((store.state.parts.length || sharingLinked()) && !confirm(`Add the sample storage units and parts to ${where}?`)) return;
     store.importJSON(JSON.stringify(SAMPLE), { merge: true });
     toast('Sample data loaded');
   });
   view.querySelector('#reset').addEventListener('click', () => {
-    if (!confirm('Erase all storage units, slots and parts on this device? Export first if you want a backup.')) return;
+    const message = sharingLinked()
+      ? 'Erase ALL storage units, slots and parts from the family catalog, for everyone? Export first if you want a backup.'
+      : 'Erase all storage units, slots and parts on this device? Export first if you want a backup.';
+    if (!confirm(message)) return;
     store.reset();
     toast('Catalog erased');
   });
@@ -1033,7 +1230,17 @@ function render() {
 
 store.subscribe(updateSummary);
 window.addEventListener('hashchange', () => {
+  refreshPending = false;
   render();
   window.scrollTo(0, 0);
 });
+view.addEventListener('focusout', () => {
+  if (!refreshPending) return;
+  refreshPending = false;
+  setTimeout(refreshForRemote, 0);
+});
+window.addEventListener('online', updateSyncBadge);
+window.addEventListener('offline', updateSyncBadge);
 render();
+// Phones already sharing reconnect at startup; others load Firebase only if they open sharing.
+if (sharingLinked()) connectSharing();
