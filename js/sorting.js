@@ -20,3 +20,113 @@ export function guessCategory(name) {
   for (const [re, category] of CATEGORY_HINTS) if (re.test(text)) return category;
   return '';
 }
+
+// ---------- "Where should this go?" ----------
+//
+// Parts are compared by shape, read from names like "Tile 2 x 2 Corner":
+// the kind (Plate, Tile, Brick…), the size, and any details ("corner",
+// "studs on edge"). A drawer with free compartments that holds similar parts
+// is the best home; next best is an empty drawer beside similar parts.
+
+const STOP_WORDS = new Set(['with', 'w', 'and', 'on', 'in', 'of', 'the', 'no', 'without']);
+
+/** "Tile 2 x 2 with Studs on Edge" -> { type: 'tile', dims: [2, 2], details: ['studs', 'edge'] } */
+export function partShape(name) {
+  const text = String(name ?? '').toLowerCase().replace(/[()]/g, ' ');
+  const dimMatch = text.match(/(\d+)\s*[x×]\s*(\d+)(?:\s*[x×]\s*(\d+))?/);
+  const dims = dimMatch ? dimMatch.slice(1).filter(Boolean).map(Number) : [];
+  const before = dimMatch ? text.slice(0, dimMatch.index) : text;
+  const after = dimMatch ? text.slice(dimMatch.index + dimMatch[0].length) : '';
+  const words = (s) => s.split(/[^a-z]+/).filter((w) => w.length > 1 && !STOP_WORDS.has(w));
+  const [type = '', ...extra] = words(before);
+  return { type, dims, details: [...new Set([...extra, ...words(after)])] };
+}
+
+/** How alike two parts are: 0 (nothing in common) to 12 (same kind, size and details). Kind counts most. */
+export function similarity(a, b) {
+  const sa = partShape(a.name);
+  const sb = partShape(b.name);
+  let score = 0;
+  if (sa.type && sa.type === sb.type) score += 5;
+  else if (a.category && a.category === b.category) score += 2;
+  if (sa.dims.length && sb.dims.length) {
+    if (sa.dims[0] === sb.dims[0]) score += 2;
+    const gap = Math.abs((sa.dims[1] ?? 0) - (sb.dims[1] ?? 0));
+    if (gap === 0) score += 2;
+    else if (gap <= 2) score += 1;
+  }
+  if (!sa.details.length && !sb.details.length) score += 1;
+  else {
+    const shared = sa.details.filter((d) => sb.details.includes(d)).length;
+    const all = new Set([...sa.details, ...sb.details]).size;
+    score += (3 * shared) / all;
+  }
+  return score;
+}
+
+const LIKE = 6; // similarity at which parts count as "like pieces" (e.g. any two plain tiles)
+
+/**
+ * Suggest slots for a part that needs a home.
+ * @param part { partNum, name, category }
+ * @param catalog { units, slots, parts } from the store
+ * @returns [{ slotId, code, kind: 'share' | 'beside' | 'empty', reason, score }] best first
+ */
+export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) {
+  const byNum = new Map(parts.map((p) => [p.partNum.toLowerCase(), p]));
+  const stored = new Map(slots.map((s) => [s.id, s]));
+  const self = part.partNum?.toLowerCase();
+  const contentsOf = (id) =>
+    (stored.get(id)?.partNums ?? [])
+      .filter((n) => n.toLowerCase() !== self)
+      .map((n) => byNum.get(n.toLowerCase()) ?? { partNum: n, name: '', category: '' });
+  const best = (list) =>
+    list.reduce((top, p) => {
+      const score = similarity(part, p);
+      return score > top.score ? { score, part: p } : top;
+    }, { score: -1, part: null });
+  const label = (p) => p.name || `#${p.partNum}`;
+
+  const out = [];
+  let fallback = null;
+  for (const unit of units) {
+    unit.rows.forEach((cols, r) => {
+      for (let c = 0; c < cols; c += 1) {
+        const id = `${unit.id}:${r + 1}:${c + 1}`;
+        const code = `${unit.code}-${r + 1}-${c + 1}`;
+        const slot = stored.get(id);
+        const contents = contentsOf(id);
+        if ((slot?.partNums ?? []).some((n) => n.toLowerCase() === self)) continue; // already there
+        if (!contents.length && slot?.label) continue; // named compartment ("Hinges"): contents not listed
+        if (contents.length) {
+          const free = (slot?.compartments ?? 1) - contents.length;
+          const match = best(contents);
+          if (free > 0 && match.score >= LIKE) {
+            out.push({
+              slotId: id, code, kind: 'share', score: match.score + 1,
+              reason: `${free} free compartment${free === 1 ? '' : 's'}, with ${label(match.part)}`,
+            });
+          }
+          continue;
+        }
+        // Empty drawer: how alike are the parts in the drawers around it?
+        const around = [[r, c - 1], [r, c + 1], [r - 1, c], [r + 1, c]]
+          .filter(([nr, nc]) => nr >= 0 && nr < unit.rows.length && nc >= 0 && nc < unit.rows[nr])
+          .map(([nr, nc]) => ({ code: `${unit.code}-${nr + 1}-${nc + 1}`, match: best(contentsOf(`${unit.id}:${nr + 1}:${nc + 1}`)) }))
+          .sort((a, b) => b.match.score - a.match.score)[0];
+        if (around && around.match.score >= LIKE) {
+          out.push({
+            slotId: id, code, kind: 'beside', score: around.match.score - 0.5,
+            reason: `empty, next to ${around.code} (${label(around.match.part)})`,
+          });
+        } else if (!fallback) {
+          fallback = { slotId: id, code, kind: 'empty', score: 0, reason: 'empty drawer' };
+        }
+      }
+    });
+  }
+  out.sort((a, b) => b.score - a.score || a.code.localeCompare(b.code, undefined, { numeric: true }));
+  const picks = out.slice(0, limit);
+  if (picks.length < limit && fallback) picks.push(fallback);
+  return picks;
+}

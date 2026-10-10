@@ -9,6 +9,8 @@ No build step and no account needed. It's plain HTML/CSS/JavaScript (ES modules)
 
 - **Storage unit:** a drawer cabinet, a divided case or a tub with compartments. Each unit has a letter code (`A`, `B`, …) and a layout: the number of drawers or compartments in each row, top to bottom. A cabinet with 5 rows of 6 small drawers and 3 rows of 3 large ones is `6, 6, 6, 6, 6, 3, 3, 3`.
 - **Slot:** one drawer or compartment, named **unit-row-column**. `A-7-1` is cabinet A, row 7, first drawer. A slot holds one or more part numbers, with all colors mixed. A slot can also have a name such as "Hinges" for mixed compartments.
+- **Compartments:** a drawer can be divided into up to 8 compartments, each holding one kind of part. The map shows how
+  full a divided drawer is (e.g. `3/8`).
 - **Part:** a part number, any alternate numbers for the same part (e.g. `15573 / 3794`), a name and a kind (Plates, Tiles…). A part can live in more than one slot, for example when a drawer overflows.
 
 Piece counts and colors aren't tracked. The app answers "which slot is it in?"
@@ -20,6 +22,7 @@ Piece counts and colors aren't tracked. The app answers "which slot is it in?"
 | 🔍 **Find** | Instant search by part number, alternate number, name (`1x2 plate`, `tile 2 by 2`) or slot code. Results show their slot codes, and a **map of the cabinet** highlights the drawers. Type a slot code and press Enter to jump to that slot. |
 | 📷 **Identify** | Take a photo of a part and get likely matches from [Brickognize](https://brickognize.com) (free, no key). Or look it up by number or name. Each result shows **which slot it goes in**, or offers to give it a slot. |
 | 🗄️ **Storage** | **Add a storage unit from a photo:** photograph a whole labeled cabinet, and Claude reads the layout and every Brick Architect label. You check each drawer (hard-to-read ones are highlighted) and fix anything before it's saved. Or add storage units (presets for common cabinets and cases) and see a map of each one. Tap a drawer to open its slot, where you can type the part numbers from its label (`3623, 63864`). Names are filled in for known parts. **← / →** steps through every slot in order, to catalog a whole cabinet in one go. Parts that have no slot yet are listed here too. |
+| 💡 **Suggested spots** | A part without a slot (on its page, or in Identify results) gets suggestions for where to put it, based on its shape: kind (plate, tile, brick…), size and details like "corner". First choice is a divided drawer with free compartments holding like pieces, then an empty drawer next to like pieces. Tap a suggestion to put the part there. |
 | 🏷️ **Labels** | Print labels for slots that need one (any slot whose contents changed) or for a whole unit. Choose a **full label** (code, part names and numbers) or a **code sticker** to put next to an existing Brick Architect label. |
 | ⚙️ **Settings** | Export/import the catalog to share between family devices (merge or replace), set the Rebrickable and Anthropic API keys, and load sample data. |
 
