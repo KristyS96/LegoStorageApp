@@ -1,6 +1,6 @@
 // Part identification helpers.
 //  - Brickognize: free image recognition for LEGO parts (no key needed).
-//  - Rebrickable: part catalog lookups by number / name (free API key).
+//  - Rebrickable: names and pictures by BrickLink/LEGO number or by name (free API key).
 
 const BRICKOGNIZE_URL = 'https://api.brickognize.com/predict/parts/';
 const REBRICKABLE_URL = 'https://rebrickable.com/api/v3/lego';
@@ -24,9 +24,20 @@ export async function identifyFromPhoto(file, fetchImpl = fetch) {
   return parseBrickognize(await res.json());
 }
 
-export function parseRebrickablePart(json) {
+// Rebrickable has its own part numbering, but the family's labels (Brick Architect),
+// Brickognize and BrickLink use BrickLink/LEGO numbers. Rebrickable is only used for
+// names and pictures; its own numbers are never shown or saved.
+
+/** The BrickLink number for a Rebrickable part (or its LEGO number); null if it has neither. */
+export function familyNumber(json) {
+  const ids = json?.external_ids ?? {};
+  return String(ids.BrickLink?.[0] ?? ids.LEGO?.[0] ?? '').trim() || null;
+}
+
+export function parseRebrickablePart(json, partNum = familyNumber(json)) {
+  if (!partNum) return null;
   return {
-    partNum: json.part_num ?? '',
+    partNum,
     name: json.name ?? '',
     imageUrl: json.part_img_url ?? '',
     category: '',
@@ -44,22 +55,32 @@ async function rebrickable(path, key, fetchImpl) {
   return res.json();
 }
 
-// Try an exact part number first, then fall back to a name search.
+/**
+ * Name and picture for a BrickLink/LEGO part number, keeping the number as given.
+ * Looks it up by BrickLink number, then by LEGO number; null when neither matches.
+ */
+export async function partByNumber(num, key, fetchImpl = fetch) {
+  const q = String(num ?? '').trim();
+  if (!q) return null;
+  for (const field of ['bricklink_id', 'lego_id']) {
+    const list = await rebrickable(`/parts/?${field}=${encodeURIComponent(q)}&page_size=5`, key, fetchImpl);
+    const hit = list?.results?.[0];
+    if (hit) return parseRebrickablePart(hit, q);
+  }
+  return null;
+}
+
+// A part number first, then a name search ("plate 1 x 2"); results carry BrickLink numbers.
 export async function lookupPart(query, key, fetchImpl = fetch) {
   const q = String(query ?? '').trim();
   if (!q) return [];
   if (/^[0-9a-z]+$/i.test(q)) {
-    const exact = await rebrickable(`/parts/${encodeURIComponent(q)}/`, key, fetchImpl);
-    if (exact) return [parseRebrickablePart(exact)];
+    const exact = await partByNumber(q, key, fetchImpl);
+    if (exact) return [exact];
   }
   const list = await rebrickable(`/parts/?search=${encodeURIComponent(q)}&page_size=12`, key, fetchImpl);
-  return (list?.results ?? []).map(parseRebrickablePart);
-}
-
-/** Exact part-number lookup on Rebrickable; null when Rebrickable doesn't know the number. */
-export async function partByNumber(num, key, fetchImpl = fetch) {
-  const q = String(num ?? '').trim();
-  if (!q) return null;
-  const found = await rebrickable(`/parts/${encodeURIComponent(q)}/`, key, fetchImpl);
-  return found ? parseRebrickablePart(found) : null;
+  const seen = new Set();
+  return (list?.results ?? [])
+    .map((json) => parseRebrickablePart(json))
+    .filter((p) => p && !seen.has(p.partNum) && seen.add(p.partNum));
 }

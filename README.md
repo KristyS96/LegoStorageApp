@@ -79,6 +79,13 @@ family catalog with what it has; the next one can use the family catalog or comb
 
 To add or remove someone, edit the address list in the Firestore rules and publish again.
 
+## Part numbers
+
+The app uses **BrickLink/LEGO part numbers** everywhere, the same ones on Brick Architect labels and in Brickognize
+photo matches. Rebrickable has its own numbering, so it is only used to fill in names and pictures: a number is looked
+up there by its BrickLink number, then its LEGO number, and the app keeps the number you entered. Rebrickable's own
+numbers are never shown or saved.
+
 ## How data is stored and shared
 
 - The catalog lives in the browser's `localStorage` on each device (with family sharing on, that's a copy of the shared catalog).
