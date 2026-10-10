@@ -98,8 +98,22 @@ function normalizeSlot(input, existing = {}) {
     label: clean(input.label ?? existing.label),
     partNums: parseNums(input.partNums ?? existing.partNums),
     needsLabel: Boolean(input.needsLabel ?? existing.needsLabel),
+    // How many compartments the drawer is split into (1-8); each holds one kind of part.
+    compartments: clampInt(input.compartments ?? existing.compartments ?? 1, 1, MAX_COMPARTMENTS),
     updatedAt: input.updatedAt ?? Date.now(),
   };
+}
+
+export const MAX_COMPARTMENTS = 8;
+
+function clampInt(value, min, max) {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min;
+}
+
+// A slot worth storing: anything that differs from an untouched drawer.
+function slotHasData(s) {
+  return s.partNums.length || s.label || s.needsLabel || s.compartments > 1;
 }
 
 function normalizePart(input, existing = {}) {
@@ -273,7 +287,7 @@ export function createStore(backend = defaultBackend()) {
       if (!current) throw new Error('Slot not found.');
       const slot = normalizeSlot({ ...patch, updatedAt: Date.now() }, current);
       state.slots = state.slots.filter((s) => s.id !== id);
-      if (slot.partNums.length || slot.label || slot.needsLabel) state.slots.push(slot);
+      if (slotHasData(slot)) state.slots.push(slot);
       commit();
       return slot;
     },
@@ -346,7 +360,7 @@ export function createStore(backend = defaultBackend()) {
       state.parts = state.parts.filter((p) => p !== part);
       state.slots = state.slots
         .map((s) => ({ ...s, partNums: s.partNums.filter((n) => !nums.has(normNum(n))) }))
-        .filter((s) => s.partNums.length || s.label || s.needsLabel);
+        .filter(slotHasData);
       commit();
     },
     partsWithoutSlot() {

@@ -199,3 +199,15 @@ test('the Anthropic key is never exported and survives a replace import', () => 
   a.importJSON(createStore(memoryBackend()).exportJSON());
   assert.equal(a.state.settings.anthropicKey, 'sk-ant-secret');
 });
+
+test('drawers keep their compartment count (1-8)', () => {
+  const store = createStore(memoryBackend());
+  const unit = cabinet(store);
+  const id = slotId(unit.id, 1, 1);
+  assert.equal(store.getSlot(id).compartments, 1);
+  store.updateSlot(id, { compartments: '8' });
+  assert.equal(store.getSlot(id).compartments, 8);
+  store.updateSlot(id, { compartments: 20 });
+  assert.equal(store.getSlot(id).compartments, 8);
+  assert.ok(store.state.slots.some((s) => s.id === id), 'an empty split drawer is remembered');
+});

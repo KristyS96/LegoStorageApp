@@ -1,7 +1,7 @@
-import { createStore, normNum, parseNums, parseRows, slotId, slotCode } from './store.js';
+import { createStore, normNum, parseNums, parseRows, slotId, slotCode, MAX_COMPARTMENTS } from './store.js';
 import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart } from './identify.js';
-import { guessCategory } from './sorting.js';
+import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
@@ -115,7 +115,9 @@ function unitMap(unit, { highlight = new Set(), compact = false } = {}) {
           const text = cellText(slot);
           const cls = [text ? 'filled' : '', highlight.has(slot.id) ? 'hit' : ''].join(' ');
           return `<a class="cell ${cls}" href="${slotHref(slot.id)}" title="${esc(`${slotCode(unit, r + 1, c + 1)} ${text}`)}">
-            <span class="code">${r + 1}-${c + 1}</span>${compact ? '' : `<span class="cell-text">${esc(text)}</span>`}</a>`;
+            <span class="code">${r + 1}-${c + 1}${
+              !compact && slot.compartments > 1 ? `<span class="fill">${slot.partNums.length}/${slot.compartments}</span>` : ''
+            }</span>${compact ? '' : `<span class="cell-text">${esc(text)}</span>`}</a>`;
         }).join('')}
       </div>`,
       )
@@ -215,6 +217,14 @@ function renderFind({ params }) {
 
 // ---------- Identify ----------
 
+// For a part without a home: the best suggested spot, if any.
+function suggestionLine(part) {
+  const [top] = suggestSlots({ ...part, category: part.category || guessCategory(part.name) }, store.state, { limit: 1 });
+  if (!top) return '<span class="muted">No slot for this part yet.</span>';
+  return `<span class="muted">No slot yet.</span> Suggested: ${slotBadge(store.getSlot(top.slotId))}
+    <span class="muted">(${esc(top.reason)})</span>`;
+}
+
 function resultCard(r) {
   const mine = store.getPart(r.partNum);
   const slots = store.slotsForPart(r.partNum);
@@ -228,7 +238,7 @@ function resultCard(r) {
           <span>#${esc(r.partNum)}</span>
           ${r.score != null ? `<span>${Math.round(r.score * 100)}% match</span>` : ''}
         </div>
-        <div class="owned">${slots.length ? `It goes in ${slots.map(slotBadge).join(' ')}` : '<span class="muted">No slot for this part yet.</span>'}</div>
+        <div class="owned">${slots.length ? `It goes in ${slots.map(slotBadge).join(' ')}` : suggestionLine(r)}</div>
         <div class="actions">
           <a class="btn" href="${partHref(r.partNum)}?${esc(qs.toString())}">${slots.length ? 'Details' : '➕ Give it a slot'}</a>
         </div>
@@ -325,6 +335,7 @@ function renderPart({ id: num, params }) {
     imageUrl: params.get('img') ?? '',
   };
   const slots = existing ? store.slotsForPart(existing.partNum) : [];
+  const suggestions = slots.length ? [] : suggestSlots(p, store.state);
 
   view.innerHTML = `
     <form id="part-form" class="card">
@@ -369,6 +380,17 @@ function renderPart({ id: num, params }) {
               .join(' ')
           : '<span class="muted">Not in any slot yet.</span>'
       }</div>
+      ${
+        suggestions.length
+          ? `<h4 class="suggest-head">Suggested spots</h4>
+             <ul class="suggestions">${suggestions
+               .map(
+                 (sg) => `<li><button type="button" class="suggestion" data-suggest="${esc(sg.slotId)}">
+                   <span class="slot-badge">📦 ${esc(sg.code)}</span><span>${esc(sg.reason)}</span></button></li>`,
+               )
+               .join('')}</ul>`
+          : ''
+      }
       <form id="assign-form" class="row" style="margin-top:12px">
         <input id="assign" list="slot-codes" placeholder="Slot code, e.g. A-7-1" autocomplete="off" aria-label="Slot code" />
         <datalist id="slot-codes">${slotCodeOptions()}</datalist>
@@ -376,7 +398,7 @@ function renderPart({ id: num, params }) {
       </form>
       ${store.state.units.length ? '' : '<p class="muted">Set up your drawers and cases in <a href="#/storage">Storage</a> first.</p>'}
     </div>
-    <div id="maps">${hitMaps(slots)}</div>
+    <div id="maps">${hitMaps(slots.length ? slots : suggestions.map((sg) => store.getSlot(sg.slotId)))}</div>
   `;
 
   const form = view.querySelector('#part-form');
@@ -393,13 +415,7 @@ function renderPart({ id: num, params }) {
     }
   });
 
-  view.querySelector('#assign-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const slot = store.findSlotByCode(view.querySelector('#assign').value);
-    if (!slot) {
-      toast('No slot with that code. Use unit-row-column, e.g. A-7-1.');
-      return;
-    }
+  function putIn(slot) {
     try {
       save(); // keep any edits to the name etc.
       store.addPartsToSlot(slot.id, [p.partNum]);
@@ -408,7 +424,20 @@ function renderPart({ id: num, params }) {
     } catch (err) {
       toast(err.message);
     }
+  }
+
+  view.querySelector('#assign-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const slot = store.findSlotByCode(view.querySelector('#assign').value);
+    if (!slot) {
+      toast('No slot with that code. Use unit-row-column, e.g. A-7-1.');
+      return;
+    }
+    putIn(slot);
   });
+  view.querySelectorAll('[data-suggest]').forEach((btn) =>
+    btn.addEventListener('click', () => putIn(store.getSlot(btn.dataset.suggest))),
+  );
 
   view.querySelectorAll('[data-remove]').forEach((btn) =>
     btn.addEventListener('click', () => {
@@ -759,6 +788,11 @@ function renderSlot({ id }) {
       ${next ? `<a class="btn" href="${slotHref(next)}">${esc(store.codeOf(store.getSlot(next)))} →</a>` : '<span></span>'}
     </div>
     <h2 class="slot-title">📦 ${esc(store.codeOf(slot))}</h2>
+    ${
+      slot.compartments > 1
+        ? `<p class="muted">${slot.partNums.length} of ${slot.compartments} compartments used</p>`
+        : ''
+    }
 
     <div class="card" style="padding:0">
       <ul class="part-list">
@@ -795,6 +829,12 @@ function renderSlot({ id }) {
     <form id="slot-form" class="card">
       <label for="label" style="margin-top:0">Slot name (optional)</label>
       <input id="label" name="label" value="${esc(slot.label)}" placeholder="e.g. Hinges, or Clips & bars" />
+      <label for="compartments">Compartments in this drawer</label>
+      <select id="compartments" name="compartments">
+        ${Array.from({ length: MAX_COMPARTMENTS }, (_, i) => i + 1)
+          .map((n) => `<option value="${n}" ${slot.compartments === n ? 'selected' : ''}>${n === 1 ? '1 (not divided)' : n}</option>`)
+          .join('')}
+      </select>
       <label class="check"><input type="checkbox" name="needsLabel" ${slot.needsLabel ? 'checked' : ''} /> Needs a printed label</label>
       <div class="actions"><button class="primary">Save</button></div>
     </form>
@@ -819,7 +859,7 @@ function renderSlot({ id }) {
   view.querySelector('#slot-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    store.updateSlot(slot.id, { label: fd.get('label'), needsLabel: fd.has('needsLabel') });
+    store.updateSlot(slot.id, { label: fd.get('label'), compartments: fd.get('compartments'), needsLabel: fd.has('needsLabel') });
     toast('Saved');
     renderSlot({ id });
   });
