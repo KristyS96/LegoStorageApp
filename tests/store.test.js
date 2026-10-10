@@ -211,3 +211,16 @@ test('drawers keep their compartment count (1-8)', () => {
   assert.equal(store.getSlot(id).compartments, 8);
   assert.ok(store.state.slots.some((s) => s.id === id), 'an empty split drawer is remembered');
 });
+
+test('details found online fill gaps but never overwrite what the family entered', () => {
+  const store = createStore(memoryBackend());
+  store.ensurePart('4073');
+  store.fillPartDetails('4073', { name: 'Plate Round 1 x 1', imageUrl: 'a.png' });
+  assert.equal(store.getPart('4073').name, 'Plate Round 1 x 1');
+  assert.equal(store.getPart('4073').category, 'Plates');
+  store.fillPartDetails('4073', { name: 'Something else', imageUrl: 'b.png' });
+  assert.equal(store.getPart('4073').name, 'Plate Round 1 x 1');
+  assert.equal(store.getPart('4073').imageUrl, 'a.png');
+  store.fillPartDetails('3794', { name: 'Ignored: built-in name wins' });
+  assert.equal(store.getPart('15573').name, 'Plate 1 x 2 Jumper');
+});

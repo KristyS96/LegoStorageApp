@@ -333,3 +333,4 @@ button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; 
 /* Brick Architect label links */
 .ba-link { white-space: nowrap; }
 .ba-list .part-link { grid-template-columns: auto 1fr; }
+.suggestion .thumb { width: 44px; height: 44px; flex: 0 0 auto; }

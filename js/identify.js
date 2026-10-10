@@ -55,3 +55,11 @@ export async function lookupPart(query, key, fetchImpl = fetch) {
   const list = await rebrickable(`/parts/?search=${encodeURIComponent(q)}&page_size=12`, key, fetchImpl);
   return (list?.results ?? []).map(parseRebrickablePart);
 }
+
+/** Exact part-number lookup on Rebrickable; null when Rebrickable doesn't know the number. */
+export async function partByNumber(num, key, fetchImpl = fetch) {
+  const q = String(num ?? '').trim();
+  if (!q) return null;
+  const found = await rebrickable(`/parts/${encodeURIComponent(q)}/`, key, fetchImpl);
+  return found ? parseRebrickablePart(found) : null;
+}

@@ -37,3 +37,17 @@ test('lookupPart tries exact number then falls back to search', async () => {
   assert.match(calls[1].url, /search=3001x/);
   assert.equal(results[0].partNum, '3001');
 });
+
+import { partByNumber } from '../js/identify.js';
+
+test('partByNumber returns the name and picture, or null for unknown numbers', async () => {
+  const fakeFetch = async (url) =>
+    url.includes('/parts/4073/')
+      ? { ok: true, status: 200, json: async () => ({ part_num: '4073', name: 'Plate Round 1 x 1', part_img_url: 'img.png' }) }
+      : { ok: false, status: 404 };
+  assert.deepEqual(await partByNumber('4073', 'k', fakeFetch), {
+    partNum: '4073', name: 'Plate Round 1 x 1', imageUrl: 'img.png', category: '', score: null,
+  });
+  assert.equal(await partByNumber('99999', 'k', fakeFetch), null);
+  await assert.rejects(partByNumber('4073', ''), /API key/);
+});

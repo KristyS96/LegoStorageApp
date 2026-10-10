@@ -1,6 +1,6 @@
 import { createStore, normNum, parseNums, parseRows, slotId, slotCode, MAX_COMPARTMENTS } from './store.js';
 import { searchParts } from './search.js';
-import { identifyFromPhoto, lookupPart } from './identify.js';
+import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
 import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { brickArchitectLabelUrl, labelNumber } from './labels.js';
@@ -781,6 +781,30 @@ function renderScanReview(unitInput, image, scan) {
   });
 }
 
+// ---------- Part names from Rebrickable ----------
+
+/**
+ * Look up names (and pictures) for parts that have none. Returns how many were named,
+ * or null when there's no Rebrickable key to look them up with.
+ */
+async function fillNamesOnline(parts, onProgress = () => {}) {
+  const key = store.state.settings.rebrickableKey;
+  if (!key) return null;
+  let named = 0;
+  for (const [i, part] of parts.entries()) {
+    onProgress(i + 1, parts.length);
+    for (const num of [part.partNum, ...part.altNums]) {
+      const found = await partByNumber(num, key); // stops on a bad key or network error
+      if (found?.name) {
+        store.fillPartDetails(part.partNum, found);
+        named += 1;
+        break;
+      }
+    }
+  }
+  return named;
+}
+
 // ---------- Slot ----------
 
 function neighborSlots(unit, slot) {
@@ -841,8 +865,13 @@ function renderSlot({ id }) {
         <input id="nums" list="part-nums" placeholder="e.g. 3623, 63864" autocomplete="off" />
         <datalist id="part-nums">${partNumOptions()}</datalist>
         <button class="primary" style="flex:0 0 auto">Add</button>
+        <label class="btn" for="slot-photo" style="flex:0 0 auto">📷 Photo</label>
+        <input id="slot-photo" type="file" accept="image/*" capture="environment" hidden />
       </div>
-      <p class="muted">Separate several numbers with commas. Known parts get their names filled in.</p>
+      <p class="muted">Separate several numbers with commas. Names and pictures are filled in
+        ${store.state.settings.rebrickableKey ? 'from the built-in list or Rebrickable' : 'for known parts (add a Rebrickable key in Settings to look up the rest)'}.
+        Or snap a 📷 photo of the part.</p>
+      <div id="slot-photo-results"></div>
     </form>
 
     <form id="slot-form" class="card">
@@ -870,9 +899,59 @@ function renderSlot({ id }) {
       toast(added.length ? `Added ${added.map((p) => p.name || p.partNum).join(', ')}` : 'Already in this slot');
       renderSlot({ id });
       view.querySelector('#nums').focus();
+      const unnamed = added.filter((p) => !p.name);
+      if (unnamed.length && store.state.settings.rebrickableKey) {
+        toast('Looking up names on Rebrickable…');
+        fillNamesOnline(unnamed)
+          .then((named) => {
+            toast(named ? `Found ${named} name${named === 1 ? '' : 's'}` : 'Rebrickable doesn\'t know that number; add the name on the part\'s page.');
+            if (parseRoute().name !== 'slot' || parseRoute().id !== id) return;
+            // Redraw with the new names, keeping anything half-typed in the box.
+            const typing = document.activeElement?.id === 'nums';
+            const draft = view.querySelector('#nums')?.value ?? '';
+            renderSlot({ id });
+            const box = view.querySelector('#nums');
+            box.value = draft;
+            if (typing) box.focus();
+          })
+          .catch((err) => toast(err.message));
+      }
     } catch (err) {
       toast(err.message);
     }
+  });
+
+  // Photo of a part: pick the right match and it goes into this drawer, name and picture included.
+  const photoOut = view.querySelector('#slot-photo-results');
+  view.querySelector('#slot-photo').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    photoOut.innerHTML = '<p class="muted">🔎 Identifying…</p>';
+    try {
+      const matches = (await identifyFromPhoto(file)).slice(0, 4);
+      photoOut.innerHTML = matches.length
+        ? `<p class="muted">Tap the right one to add it here:</p><ul class="suggestions">${matches
+            .map(
+              (m, i) => `<li><button type="button" class="suggestion" data-match="${i}">${thumb(m.imageUrl)}
+                <span><strong>${esc(m.name)}</strong><br><span class="muted">#${esc(m.partNum)}${
+                  m.score != null ? ` · ${Math.round(m.score * 100)}% match` : ''
+                }</span></span></button></li>`,
+            )
+            .join('')}</ul>`
+        : '<p class="muted">No matches. Try another angle or lighting.</p>';
+      photoOut.querySelectorAll('[data-match]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const m = matches[btn.dataset.match];
+          store.fillPartDetails(m.partNum, m);
+          const added = store.addPartsToSlot(slot.id, [m.partNum]);
+          toast(added.length ? `Added ${m.name}` : 'Already in this slot');
+          renderSlot({ id });
+        }),
+      );
+    } catch (err) {
+      photoOut.innerHTML = `<p class="muted">⚠️ ${esc(err.message)}</p>`;
+    }
+    e.target.value = '';
   });
 
   view.querySelector('#slot-form').addEventListener('submit', (e) => {
@@ -1243,6 +1322,13 @@ function renderSettings() {
         The key stays on this device and is never included in exports.</p>
       <label for="rbKey">Rebrickable API key</label>
       <input id="rbKey" name="rebrickableKey" value="${esc(store.state.settings.rebrickableKey)}" autocomplete="off" />
+      ${(() => {
+        const unnamed = store.state.parts.filter((p) => !p.name).length;
+        return unnamed
+          ? `<p class="muted" style="margin-bottom:0">${unnamed} part${unnamed === 1 ? ' has' : 's have'} no name yet.
+              <button type="button" class="small" id="fill-names" ${store.state.settings.rebrickableKey ? '' : 'disabled'}>Look up missing names</button></p>`
+          : '';
+      })()}
       <h3>Reading cabinets from photos</h3>
       <p class="muted">Adding a storage unit from a photo uses Claude to read the drawer labels. Create an API key at
         console.anthropic.com → API keys and paste it here. Each photo costs roughly 10–20¢. The key stays on this
@@ -1275,6 +1361,19 @@ function renderSettings() {
       toast(`Import failed: ${err.message}`);
     }
     e.target.value = '';
+  });
+  view.querySelector('#fill-names')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      const named = await fillNamesOnline(
+        store.state.parts.filter((p) => !p.name),
+        (i, n) => (e.target.textContent = `Looking up ${i} of ${n}…`),
+      );
+      toast(`Named ${named} part${named === 1 ? '' : 's'}`);
+    } catch (err) {
+      toast(err.message);
+    }
+    renderSettings();
   });
   view.querySelector('#settings-form').addEventListener('submit', (e) => {
     e.preventDefault();

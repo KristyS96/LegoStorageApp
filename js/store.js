@@ -355,6 +355,18 @@ export function createStore(backend = defaultBackend()) {
       commit();
       return state.parts[idx];
     },
+    // Fill in details found online (or from a photo match) without overwriting
+    // anything the family already entered. Adds the part to the catalog if needed.
+    fillPartDetails(num, { name = '', imageUrl = '' } = {}) {
+      const part = api.ensurePart(num, { silent: true });
+      const changes = {};
+      if (!part.name && clean(name)) changes.name = clean(name);
+      if (!part.imageUrl && clean(imageUrl)) changes.imageUrl = clean(imageUrl);
+      if (changes.name) changes.category = guessCategory(changes.name) || part.category;
+      Object.assign(part, changes, Object.keys(changes).length ? { updatedAt: Date.now() } : {});
+      commit();
+      return part;
+    },
     removePart(partNum) {
       const part = api.getPart(partNum);
       if (!part) return;
