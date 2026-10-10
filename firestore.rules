@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// Paste into Firebase console → Firestore Database → Rules, after replacing the
+// example addresses with the family's Google accounts (lowercase).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isFamily() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() in [
+          'parent1@example.com',
+          'parent2@example.com'
+        ];
+    }
+
+    match /families/{familyId}/{document=**} {
+      allow read, write: if isFamily();
+    }
+  }
+}
