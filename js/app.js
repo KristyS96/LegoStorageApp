@@ -1,8 +1,9 @@
-import { createStore } from './store.js';
+import { createStore, normNum, parseNums, slotId, slotCode } from './store.js';
 import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart } from './identify.js';
-import { COLORS, getColor } from './data/colors.js';
+import { guessCategory } from './sorting.js';
 import { CATEGORIES } from './data/categories.js';
+import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
 
 const store = createStore();
@@ -18,33 +19,29 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => el.classList.remove('show'), 2200);
+  toast.t = setTimeout(() => el.classList.remove('show'), 2400);
 }
 
 function parseRoute() {
   const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');
   const [name = 'find', id] = path.split('/');
-  return { name: name || 'find', id, params: new URLSearchParams(qs) };
+  return { name: name || 'find', id: id ? decodeURIComponent(id) : undefined, params: new URLSearchParams(qs) };
 }
 
 function go(hash) {
   location.hash = hash;
 }
 
-function binName(locationId) {
-  return store.getLocation(locationId)?.name ?? null;
+const slotHref = (id) => `#/slot/${encodeURIComponent(id)}`;
+const partHref = (num) => `#/part/${encodeURIComponent(num)}`;
+
+function slotBadge(slot) {
+  return `<a class="slot-badge" href="${slotHref(slot.id)}">📦 ${esc(store.codeOf(slot))}</a>`;
 }
 
-function binBadge(locationId) {
-  const name = binName(locationId);
-  return name
-    ? `<span class="bin-badge">📦 ${esc(name)}</span>`
-    : '<span class="bin-badge unsorted">Unsorted</span>';
-}
-
-function swatch(colorId) {
-  const c = getColor(colorId);
-  return `<span><span class="swatch" style="background:${c.hex}"></span>${esc(c.name)}</span>`;
+function slotsBadges(partNum) {
+  const slots = store.slotsForPart(partNum);
+  return slots.length ? slots.map(slotBadge).join(' ') : '<span class="slot-badge none">No slot yet</span>';
 }
 
 function thumb(url) {
@@ -53,124 +50,152 @@ function thumb(url) {
     : '<div class="thumb" aria-hidden="true">🧱</div>';
 }
 
-function colorOptions(selected, { any = false } = {}) {
-  const head = any ? `<option value="">All colors</option>` : '';
-  return (
-    head +
-    COLORS.map((c) => `<option value="${c.id}" ${String(selected) === String(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')
-  );
+function numsText(part) {
+  return [part.partNum, ...part.altNums].map((n) => `#${n}`).join(' / ');
 }
 
-function binOptions(selected, { any = false } = {}) {
-  const head = any
-    ? `<option value="">All bins</option><option value="unsorted" ${selected === 'unsorted' ? 'selected' : ''}>Unsorted</option>`
-    : `<option value="">— Unsorted —</option>`;
-  return (
-    head +
-    store.state.locations
-      .map((l) => `<option value="${esc(l.id)}" ${selected === l.id ? 'selected' : ''}>${esc(l.name)}</option>`)
-      .join('')
-  );
+function slotsFor(part) {
+  return store.slotsForPart(part.partNum).map((s) => ({ code: store.codeOf(s), label: s.label }));
+}
+
+// Datalist options for "which slot?" inputs: every slot code, with its label/contents.
+function slotCodeOptions() {
+  return store.state.units
+    .flatMap((unit) =>
+      unit.rows.flatMap((cols, r) =>
+        Array.from({ length: cols }, (_, c) => {
+          const slot = store.getSlot(slotId(unit.id, r + 1, c + 1));
+          const hint = slot.label || slot.partNums.map((n) => store.getPart(n)?.name ?? n).join(', ') || 'empty';
+          return `<option value="${esc(slotCode(unit, r + 1, c + 1))}">${esc(`${unit.name}: ${hint}`)}</option>`;
+        }),
+      ),
+    )
+    .join('');
+}
+
+function partNumOptions() {
+  const mine = new Set(store.state.parts.map((p) => normNum(p.partNum)));
+  return [...store.state.parts, ...CATALOG.filter((p) => !mine.has(normNum(p.partNum)))]
+    .map((p) => `<option value="${esc(p.partNum)}">${esc(p.name)}</option>`)
+    .join('');
 }
 
 function updateSummary() {
-  const { parts, locations } = store.state;
-  const pieces = parts.reduce((n, p) => n + p.quantity, 0);
-  document.getElementById('summary').textContent =
-    `${pieces.toLocaleString()} pcs · ${parts.length} kinds · ${locations.length} bins`;
+  const { parts, slots, units } = store.state;
+  const filled = slots.filter((s) => s.partNums.length).length;
+  document.getElementById('summary').textContent = [
+    [parts.length, 'part'],
+    [filled, 'slot'],
+    [units.length, 'unit'],
+  ]
+    .map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`)
+    .join(' · ');
 }
 
-function partRow(p) {
+// Short text for a map cell: the slot's own label, else its part names.
+function cellText(slot) {
+  if (slot.label) return slot.label;
+  return slot.partNums
+    .map((n) => (store.getPart(n)?.name || `#${n}`).replace(/^(Plate|Tile|Brick) /, (m) => `${m[0]}. `))
+    .join(', ');
+}
+
+/** Visual map of a storage unit; highlighted slots stand out (e.g. search hits). */
+function unitMap(unit, { highlight = new Set(), compact = false } = {}) {
+  return `<div class="unit-map ${compact ? 'compact' : ''}">
+    ${unit.rows
+      .map(
+        (cols, r) => `<div class="map-row" style="grid-template-columns:repeat(${cols},1fr)">
+        ${Array.from({ length: cols }, (_, c) => {
+          const slot = store.getSlot(slotId(unit.id, r + 1, c + 1));
+          const text = cellText(slot);
+          const cls = [text ? 'filled' : '', highlight.has(slot.id) ? 'hit' : ''].join(' ');
+          return `<a class="cell ${cls}" href="${slotHref(slot.id)}" title="${esc(`${slotCode(unit, r + 1, c + 1)} ${text}`)}">
+            <span class="code">${r + 1}-${c + 1}</span>${compact ? '' : `<span class="cell-text">${esc(text)}</span>`}</a>`;
+        }).join('')}
+      </div>`,
+      )
+      .join('')}
+  </div>`;
+}
+
+// Maps of every unit holding one of these slots, with those slots highlighted.
+function hitMaps(slots) {
+  const ids = new Set(slots.map((s) => s.id));
+  return store.state.units
+    .filter((u) => slots.some((s) => s.unitId === u.id))
+    .map((u) => `<div class="card"><h3 style="margin-top:0">${esc(u.code)} · ${esc(u.name)}</h3>${unitMap(u, { highlight: ids, compact: true })}</div>`)
+    .join('');
+}
+
+function partRow(part) {
   return `
-    <li class="part" data-id="${esc(p.id)}">
-      ${thumb(p.imageUrl)}
-      <div>
-        <div class="part-title">${esc(p.name || 'Unnamed part')}</div>
-        <div class="part-meta">
-          ${p.partNum ? `<span>#${esc(p.partNum)}</span>` : ''}
-          ${swatch(p.colorId)}
-          ${binBadge(p.locationId)}
+    <li class="part">
+      <a class="part-link" href="${partHref(part.partNum)}">
+        ${thumb(part.imageUrl)}
+        <div>
+          <div class="part-title">${esc(part.name || 'Unnamed part')}</div>
+          <div class="part-meta"><span>${esc(numsText(part))}</span></div>
         </div>
-      </div>
-      <div class="qty">
-        <button class="small" data-act="dec" aria-label="Remove one">−</button>
-        <strong>${p.quantity}</strong>
-        <button class="small" data-act="inc" aria-label="Add one">+</button>
-      </div>
+      </a>
+      <div class="part-slots">${slotsBadges(part.partNum)}</div>
     </li>`;
 }
 
-// Shared click handling for any rendered part list.
-function wirePartList(listEl) {
-  listEl.addEventListener('click', (e) => {
-    const li = e.target.closest('.part');
-    if (!li) return;
-    const act = e.target.closest('[data-act]')?.dataset.act;
-    if (act === 'inc' || act === 'dec') {
-      const part = store.adjustQuantity(li.dataset.id, act === 'inc' ? 1 : -1);
-      if (part) li.querySelector('.qty strong').textContent = part.quantity;
-      return;
-    }
-    go(`#/edit/${li.dataset.id}`);
-  });
-}
-
-// ---------- views ----------
+// ---------- Find ----------
 
 function renderFind({ params }) {
-  const state = {
-    q: params.get('q') ?? '',
-    category: params.get('category') ?? '',
-    colorId: params.get('color') ?? '',
-    locationId: params.get('bin') ?? '',
-  };
+  const state = { q: params.get('q') ?? '', category: params.get('category') ?? '' };
 
   view.innerHTML = `
-    <input id="q" class="search-big" type="search" placeholder="Search: 3001, red 2x4, wheel, bin A…"
+    <input id="q" class="search-big" type="search" placeholder="Search: 3023, 1x2 plate, hinge, A-7-1…"
       value="${esc(state.q)}" autocomplete="off" aria-label="Search parts" />
     <div class="chips" id="cats">
       <button class="chip ${state.category ? '' : 'active'}" data-cat="">All</button>
       ${CATEGORIES.map((c) => `<button class="chip ${state.category === c ? 'active' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
     </div>
-    <div class="row">
-      <select id="color" aria-label="Filter by color">${colorOptions(state.colorId, { any: true })}</select>
-      <select id="bin" aria-label="Filter by bin">${binOptions(state.locationId, { any: true })}</select>
-    </div>
     <p class="muted" id="count"></p>
     <div class="card" style="padding:0"><ul class="part-list" id="results"></ul></div>
+    <div id="maps"></div>
   `;
 
   const results = view.querySelector('#results');
-  wirePartList(results);
 
   function refresh() {
-    const found = searchParts(store.state.parts, store.state.locations, state.q, {
-      category: state.category,
-      colorId: state.colorId,
-      locationId: state.locationId,
-    });
+    const found = searchParts(store.state.parts, state.q, { slotsFor, category: state.category });
     view.querySelector('#count').textContent = store.state.parts.length
-      ? `${found.length} match${found.length === 1 ? '' : 'es'}`
+      ? `${found.length} part${found.length === 1 ? '' : 's'}`
       : '';
-    results.innerHTML = found.length
-      ? found.slice(0, 300).map(partRow).join('')
-      : `<li class="empty">${
-          store.state.parts.length
-            ? 'No parts match. Try fewer words, or <a href="#/identify">identify it from a photo</a>.'
-            : 'Your collection is empty. <a href="#/add">Add a part</a>, or load sample data in <a href="#/settings">Settings</a>.'
-        }</li>`;
-    // Keep filters in the URL so a search can be bookmarked or shared.
+    if (found.length) {
+      results.innerHTML = found.slice(0, 300).map(partRow).join('');
+    } else if (!store.state.parts.length) {
+      results.innerHTML = `<li class="empty">Nothing cataloged yet. Set up your drawers and cases in
+        <a href="#/storage">Storage</a>, or load sample data in <a href="#/settings">Settings</a>.</li>`;
+    } else {
+      const known = lookupCatalog(state.q);
+      results.innerHTML = `<li class="empty">No parts match.
+        ${known ? `<br><a href="${partHref(known.partNum)}">Give ${esc(known.name)} a slot</a> ·` : ''}
+        <a href="#/identify">Identify a part</a></li>`;
+    }
+    // Show where the top results live on each unit's map.
+    const top = state.q ? found.slice(0, 5).flatMap((p) => store.slotsForPart(p.partNum)) : [];
+    view.querySelector('#maps').innerHTML = hitMaps(top);
+
     const qs = new URLSearchParams();
     if (state.q) qs.set('q', state.q);
     if (state.category) qs.set('category', state.category);
-    if (state.colorId) qs.set('color', state.colorId);
-    if (state.locationId) qs.set('bin', state.locationId);
     history.replaceState(null, '', `#/find${qs.toString() ? `?${qs}` : ''}`);
   }
 
   view.querySelector('#q').addEventListener('input', (e) => {
     state.q = e.target.value;
     refresh();
+  });
+  view.querySelector('#q').addEventListener('keydown', (e) => {
+    // Typing a slot code and pressing Enter jumps straight to that slot.
+    if (e.key !== 'Enter') return;
+    const slot = store.findSlotByCode(state.q);
+    if (slot) go(slotHref(slot.id));
   });
   view.querySelector('#cats').addEventListener('click', (e) => {
     const chip = e.target.closest('[data-cat]');
@@ -179,40 +204,29 @@ function renderFind({ params }) {
     view.querySelectorAll('#cats .chip').forEach((c) => c.classList.toggle('active', c === chip));
     refresh();
   });
-  view.querySelector('#color').addEventListener('change', (e) => {
-    state.colorId = e.target.value;
-    refresh();
-  });
-  view.querySelector('#bin').addEventListener('change', (e) => {
-    state.locationId = e.target.value;
-    refresh();
-  });
 
   refresh();
   if (!state.q && matchMedia('(pointer: fine)').matches) view.querySelector('#q').focus();
 }
 
+// ---------- Identify ----------
+
 function resultCard(r) {
-  const owned = store.findByPartNum(r.partNum);
-  const ownedHtml = owned.length
-    ? `<div class="owned">✅ You have this:<br>${owned
-        .map((p) => `${p.quantity} × ${swatch(p.colorId)} in ${binBadge(p.locationId)}`)
-        .join('<br>')}</div>`
-    : '<div class="owned muted">Not in your collection yet.</div>';
-  const addQs = new URLSearchParams({ partNum: r.partNum, name: r.name, img: r.imageUrl });
+  const mine = store.getPart(r.partNum);
+  const slots = store.slotsForPart(r.partNum);
+  const qs = new URLSearchParams({ name: r.name, img: r.imageUrl });
   return `
     <div class="result">
       ${thumb(r.imageUrl)}
       <div>
-        <div class="part-title">${esc(r.name)}</div>
+        <div class="part-title">${esc(mine?.name || r.name)}</div>
         <div class="part-meta">
           <span>#${esc(r.partNum)}</span>
           ${r.score != null ? `<span>${Math.round(r.score * 100)}% match</span>` : ''}
         </div>
-        ${ownedHtml}
+        <div class="owned">${slots.length ? `It goes in ${slots.map(slotBadge).join(' ')}` : '<span class="muted">No slot for this part yet.</span>'}</div>
         <div class="actions">
-          <a class="btn" href="#/add?${esc(addQs.toString())}">➕ Add to collection</a>
-          ${owned.length ? `<a class="btn" href="#/find?q=${encodeURIComponent(r.partNum)}">🔍 Show</a>` : ''}
+          <a class="btn" href="${partHref(r.partNum)}?${esc(qs.toString())}">${slots.length ? 'Details' : '➕ Give it a slot'}</a>
         </div>
       </div>
     </div>`;
@@ -233,7 +247,7 @@ function renderIdentify() {
     <div class="card">
       <label for="lookup">Or look it up by number or name</label>
       <form id="lookup-form" class="row">
-        <input id="lookup" type="search" placeholder="e.g. 3001 or brick 2 x 4" />
+        <input id="lookup" type="search" placeholder="e.g. 3023 or plate 1 x 2" />
         <button class="primary" style="flex:0 0 auto">Look up</button>
       </form>
       <p class="muted">Tip: part numbers are molded in tiny print on most parts (often under or inside).</p>
@@ -270,206 +284,452 @@ function renderIdentify() {
     e.preventDefault();
     const q = view.querySelector('#lookup').value.trim();
     if (!q) return;
-    // Always check the family's own collection first: it's instant and works offline.
-    const local = searchParts(store.state.parts, store.state.locations, q);
+    // The family's own catalog and the built-in names answer instantly, even offline.
+    const local = searchParts(store.state.parts, q, { slotsFor });
+    const known = lookupCatalog(q);
+    const offline = local.length
+      ? local.slice(0, 6).map((p) => ({ ...p, score: null }))
+      : known
+        ? [{ ...known, imageUrl: '', score: null }]
+        : [];
+    if (!store.state.settings.rebrickableKey) {
+      if (offline.length) showResults(offline, 'your catalog');
+      else showError(new Error('Not in your catalog. Add a Rebrickable API key in Settings to look up any part online.'));
+      return;
+    }
     out.innerHTML = '<div class="card empty">🔎 Looking up…</div>';
     try {
-      showResults(await lookupPart(q, store.state.settings.rebrickableKey), 'Rebrickable');
+      const online = await lookupPart(q, store.state.settings.rebrickableKey);
+      showResults(online.length ? online : offline, online.length ? 'Rebrickable' : 'your catalog');
     } catch (err) {
-      if (local.length) {
-        out.innerHTML = `<div class="card"><p class="muted">${esc(err.message)}</p><h3>In your collection</h3>
-          <ul class="part-list" id="local">${local.slice(0, 20).map(partRow).join('')}</ul></div>`;
-        wirePartList(out.querySelector('#local'));
-      } else {
-        showError(err);
-      }
+      if (offline.length) showResults(offline, 'your catalog');
+      else showError(err);
     }
   });
 }
 
-function renderPartForm({ id, params }) {
-  const existing = id ? store.state.parts.find((p) => p.id === id) : null;
-  if (id && !existing) {
-    view.innerHTML = '<div class="card empty">That part no longer exists. <a href="#/find">Back to search</a></div>';
-    return;
-  }
+// ---------- Part ----------
+
+function renderPart({ id: num, params }) {
+  const existing = store.getPart(num);
+  const known = lookupCatalog(num);
   const p = existing ?? {
-    partNum: params.get('partNum') ?? '',
-    name: params.get('name') ?? '',
+    partNum: known?.partNum ?? num,
+    altNums: known?.altNums ?? [],
+    name: params.get('name') || known?.name || '',
+    category: known?.category || guessCategory(params.get('name')),
     imageUrl: params.get('img') ?? '',
-    category: params.get('category') ?? '',
-    colorId: Number(params.get('color') ?? store.state.settings.lastColorId ?? -1),
-    quantity: 1,
-    locationId: params.get('bin') ?? store.state.settings.lastLocationId ?? '',
-    notes: '',
   };
+  const slots = existing ? store.slotsForPart(existing.partNum) : [];
 
   view.innerHTML = `
-    <h2>${existing ? 'Edit part' : 'Add a part'}</h2>
     <form id="part-form" class="card">
-      <div class="row" style="align-items:flex-start">
+      <div class="row" style="align-items:center;flex-wrap:nowrap">
         <div style="flex:0 0 auto">${thumb(p.imageUrl)}</div>
         <div>
-          <label for="partNum" style="margin-top:0">Part number</label>
-          <input id="partNum" name="partNum" value="${esc(p.partNum)}" placeholder="e.g. 3001" inputmode="text" />
+          <h2 style="margin:0">${esc(p.name || 'New part')}</h2>
+          <div class="muted">#${esc(p.partNum)}${existing ? '' : ' · not in your catalog yet'}</div>
         </div>
       </div>
-      <label for="name">Name / description</label>
-      <input id="name" name="name" value="${esc(p.name)}" placeholder="e.g. Brick 2 x 4" />
+      <label for="name">Name</label>
+      <input id="name" name="name" value="${esc(p.name)}" placeholder="e.g. Plate 1 x 2" />
       <div class="grid2">
         <div>
-          <label for="colorId">Color</label>
-          <select id="colorId" name="colorId">${colorOptions(p.colorId)}</select>
+          <label for="altNums">Other part numbers for the same part</label>
+          <input id="altNums" name="altNums" value="${esc(p.altNums.join(', '))}" placeholder="e.g. 3794" />
         </div>
         <div>
-          <label for="category">Category</label>
+          <label for="category">Kind of part</label>
           <select id="category" name="category">
             ${CATEGORIES.map((c) => `<option ${p.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
           </select>
         </div>
-        <div>
-          <label for="locationId">Bin / location</label>
-          <select id="locationId" name="locationId">${binOptions(p.locationId)}</select>
-        </div>
-        <div>
-          <label for="quantity">Quantity</label>
-          <input id="quantity" name="quantity" type="number" min="0" value="${p.quantity}" inputmode="numeric" />
-        </div>
       </div>
-      <label for="notes">Notes</label>
-      <textarea id="notes" name="notes" placeholder="e.g. from the fire station set">${esc(p.notes)}</textarea>
-      <input type="hidden" name="imageUrl" value="${esc(p.imageUrl)}" />
+      <label for="imageUrl">Picture URL (optional)</label>
+      <input id="imageUrl" name="imageUrl" value="${esc(p.imageUrl)}" placeholder="https://…" />
       <div class="actions">
-        <button class="primary" type="submit">${existing ? 'Save' : 'Add part'}</button>
-        ${existing ? '<button type="button" class="danger" id="delete">Delete</button>' : ''}
-        <a class="btn" href="#/find">Cancel</a>
+        <button class="primary" type="submit">${existing ? 'Save' : 'Add to catalog'}</button>
+        ${existing ? '<button type="button" class="danger" id="delete">Delete part</button>' : ''}
       </div>
-      ${store.state.locations.length ? '' : '<p class="muted">Tip: create bins in the <a href="#/bins">Bins</a> tab so you know where things live.</p>'}
     </form>
+
+    <div class="card">
+      <h3 style="margin-top:0">Where it's stored</h3>
+      <div class="slot-list">${
+        slots.length
+          ? slots
+              .map(
+                (s) => `<span class="slot-chip">${slotBadge(s)}
+                  <button type="button" class="small" data-remove="${esc(s.id)}" aria-label="Remove from ${esc(store.codeOf(s))}">✕</button></span>`,
+              )
+              .join(' ')
+          : '<span class="muted">Not in any slot yet.</span>'
+      }</div>
+      <form id="assign-form" class="row" style="margin-top:12px">
+        <input id="assign" list="slot-codes" placeholder="Slot code, e.g. A-7-1" autocomplete="off" aria-label="Slot code" />
+        <datalist id="slot-codes">${slotCodeOptions()}</datalist>
+        <button class="primary" style="flex:0 0 auto">${slots.length ? 'Also in this slot' : 'Put in slot'}</button>
+      </form>
+      ${store.state.units.length ? '' : '<p class="muted">Set up your drawers and cases in <a href="#/storage">Storage</a> first.</p>'}
+    </div>
+    <div id="maps">${hitMaps(slots)}</div>
   `;
 
   const form = view.querySelector('#part-form');
+  const save = () => store.savePart(p.partNum, Object.fromEntries(new FormData(form)));
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const data = Object.fromEntries(new FormData(form));
     try {
-      if (existing) {
-        store.updatePart(existing.id, data);
-        toast('Saved');
-        history.back();
-      } else {
-        const part = store.addPart(data);
-        // Remember choices: when sorting a pile you often add many parts to one bin.
-        store.updateSettings({ lastColorId: part.colorId, lastLocationId: part.locationId });
-        toast(`Added ${part.name || part.partNum} → ${binName(part.locationId) ?? 'Unsorted'}`);
-        renderPartForm({ params: new URLSearchParams() });
-        view.querySelector('#partNum').focus();
-      }
+      save();
+      toast('Saved');
+      renderPart({ id: p.partNum, params: new URLSearchParams() });
     } catch (err) {
       toast(err.message);
     }
   });
 
+  view.querySelector('#assign-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const slot = store.findSlotByCode(view.querySelector('#assign').value);
+    if (!slot) {
+      toast('No slot with that code. Use unit-row-column, e.g. A-7-1.');
+      return;
+    }
+    try {
+      save(); // keep any edits to the name etc.
+      store.addPartsToSlot(slot.id, [p.partNum]);
+      toast(`Put in ${store.codeOf(slot)}`);
+      renderPart({ id: p.partNum, params: new URLSearchParams() });
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  view.querySelectorAll('[data-remove]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      store.removePartFromSlot(btn.dataset.remove, p.partNum);
+      renderPart({ id: p.partNum, params: new URLSearchParams() });
+    }),
+  );
+
   view.querySelector('#delete')?.addEventListener('click', () => {
-    if (!confirm('Delete this part from the collection?')) return;
-    store.removePart(existing.id);
+    if (!confirm('Delete this part from the catalog and from every slot?')) return;
+    store.removePart(p.partNum);
     toast('Deleted');
     go('#/find');
   });
 }
 
-function renderBins() {
-  const { locations, parts } = store.state;
-  const stats = new Map();
-  parts.forEach((p) => {
-    const key = p.locationId ?? 'unsorted';
-    const s = stats.get(key) ?? { kinds: 0, pcs: 0 };
-    s.kinds += 1;
-    s.pcs += p.quantity;
-    stats.set(key, s);
-  });
-  const unsorted = stats.get('unsorted');
+// ---------- Storage ----------
+
+const PRESETS = [
+  { label: 'Drawer cabinet (5 rows of 6, 3 rows of 3)', rows: '6, 6, 6, 6, 6, 3, 3, 3' },
+  { label: 'Divided case (6 × 6)', rows: '6, 6, 6, 6, 6, 6' },
+  { label: 'Case with 8 compartments', rows: '2, 2, 2, 2' },
+];
+
+function renderStorage() {
+  const { units } = store.state;
+  const homeless = store.partsWithoutSlot();
 
   view.innerHTML = `
-    <div class="no-print">
-      <h2>Bins & storage</h2>
-      <form id="bin-form" class="card">
-        <div class="row">
-          <input name="name" placeholder="Bin name, e.g. A1 or Red drawer" required />
-          <input name="description" placeholder="Where is it? (optional)" />
-          <button class="primary" style="flex:0 0 auto">Add bin</button>
+    <h2>Storage</h2>
+    ${units
+      .map(
+        (u) => `<div class="card">
+          <div class="unit-head">
+            <h3 style="margin:0"><span class="unit-code">${esc(u.code)}</span> ${esc(u.name)}</h3>
+            <a class="btn small" href="#/unit/${encodeURIComponent(u.id)}">Edit</a>
+          </div>
+          ${u.description ? `<p class="muted">${esc(u.description)}</p>` : ''}
+          ${unitMap(u)}
+        </div>`,
+      )
+      .join('')}
+
+    <form id="unit-form" class="card">
+      <h3 style="margin-top:0">${units.length ? 'Add another storage unit' : 'Add your first storage unit'}</h3>
+      <p class="muted">A drawer cabinet, a divided case or a tub with compartments. Slots are named
+        <strong>unit-row-column</strong>: row 7, column 1 of cabinet A is <strong>A-7-1</strong>.</p>
+      <div class="grid2">
+        <div>
+          <label for="u-name">Name</label>
+          <input id="u-name" name="name" placeholder="e.g. Plate & tile cabinet" required />
         </div>
-      </form>
-      ${
-        locations.length
-          ? locations
-              .map((l) => {
-                const s = stats.get(l.id) ?? { kinds: 0, pcs: 0 };
-                return `<div class="card bin-card" data-id="${esc(l.id)}">
-                  <div>
-                    <div class="name">📦 ${esc(l.name)}</div>
-                    <div class="muted">${esc(l.description) || '&nbsp;'}</div>
-                    <div class="muted">${s.pcs} pcs · ${s.kinds} kinds</div>
-                  </div>
-                  <div class="row" style="flex:0 0 auto">
-                    <a class="btn" href="#/find?bin=${encodeURIComponent(l.id)}">Open</a>
-                    <a class="btn" href="#/add?bin=${encodeURIComponent(l.id)}">➕</a>
-                    <button data-act="rename" aria-label="Rename">✏️</button>
-                    <button data-act="delete" class="danger" aria-label="Delete">🗑️</button>
-                  </div>
-                </div>`;
-              })
-              .join('')
-          : '<div class="card empty">No bins yet. Add your first one above — a drawer, box, bag or shelf.</div>'
-      }
-      ${
-        unsorted
-          ? `<div class="card bin-card"><div><div class="name">Unsorted</div><div class="muted">${unsorted.pcs} pcs · ${unsorted.kinds} kinds</div></div>
-             <a class="btn" href="#/find?bin=unsorted">Open</a></div>`
-          : ''
-      }
-      ${locations.length ? '<div class="actions"><button id="print">🖨️ Print bin labels</button></div>' : ''}
-    </div>
-    <div class="labels">
-      ${locations
-        .map((l) => {
-          const cats = [...new Set(parts.filter((p) => p.locationId === l.id).map((p) => p.category))];
-          return `<div class="label"><h4>${esc(l.name)}</h4><p>${esc(cats.join(' · ') || l.description)}</p></div>`;
-        })
-        .join('')}
-    </div>
+        <div>
+          <label for="u-code">Code (letter on its labels)</label>
+          <input id="u-code" name="code" placeholder="${esc(store.nextUnitCode())}" maxlength="3" />
+        </div>
+      </div>
+      <label for="u-rows">Drawers or compartments in each row, top to bottom</label>
+      <input id="u-rows" name="rows" placeholder="e.g. 6, 6, 6, 6, 6, 3, 3, 3" required />
+      <div class="chips wrap">
+        ${PRESETS.map((pr) => `<button type="button" class="chip" data-rows="${esc(pr.rows)}">${esc(pr.label)}</button>`).join('')}
+      </div>
+      <label for="u-desc">Where is it? (optional)</label>
+      <input id="u-desc" name="description" placeholder="e.g. Playroom, left wall" />
+      <div class="actions"><button class="primary">Add storage unit</button></div>
+    </form>
+
+    ${
+      homeless.length
+        ? `<div class="card" style="padding:0"><h3 style="margin:14px 14px 0">Parts without a slot (${homeless.length})</h3>
+            <ul class="part-list">${homeless.map(partRow).join('')}</ul></div>`
+        : ''
+    }
   `;
 
-  view.querySelector('#bin-form').addEventListener('submit', (e) => {
+  const form = view.querySelector('#unit-form');
+  form.addEventListener('click', (e) => {
+    const preset = e.target.closest('[data-rows]');
+    if (preset) form.elements.rows.value = preset.dataset.rows;
+  });
+  form.addEventListener('submit', (e) => {
     e.preventDefault();
     try {
-      store.addLocation(Object.fromEntries(new FormData(e.target)));
-      renderBins();
-      toast('Bin added');
+      const unit = store.addUnit(Object.fromEntries(new FormData(form)));
+      toast(`Added ${unit.code} · ${unit.name}`);
+      renderStorage();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
+
+function renderUnit({ id }) {
+  const unit = store.getUnit(id);
+  if (!unit) {
+    view.innerHTML = '<div class="card empty">That storage unit no longer exists. <a href="#/storage">Back</a></div>';
+    return;
+  }
+  view.innerHTML = `
+    <p><a href="#/storage">← Storage</a></p>
+    <h2><span class="unit-code">${esc(unit.code)}</span> ${esc(unit.name)}</h2>
+    <div class="card">${unitMap(unit)}</div>
+    <form id="unit-form" class="card">
+      <div class="grid2">
+        <div><label for="u-name">Name</label><input id="u-name" name="name" value="${esc(unit.name)}" required /></div>
+        <div><label for="u-code">Code</label><input id="u-code" name="code" value="${esc(unit.code)}" maxlength="3" required /></div>
+      </div>
+      <label for="u-rows">Drawers or compartments in each row, top to bottom</label>
+      <input id="u-rows" name="rows" value="${esc(unit.rows.join(', '))}" required />
+      <label for="u-desc">Where is it?</label>
+      <input id="u-desc" name="description" value="${esc(unit.description)}" />
+      <div class="actions">
+        <button class="primary">Save</button>
+        <a class="btn" href="#/labels?unit=${encodeURIComponent(unit.id)}">🖨️ Labels</a>
+        <button type="button" class="danger" id="delete">Delete unit</button>
+      </div>
+    </form>
+  `;
+  view.querySelector('#unit-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    try {
+      store.updateUnit(id, Object.fromEntries(new FormData(e.target)));
+      toast('Saved');
+      renderUnit({ id });
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  view.querySelector('#delete').addEventListener('click', () => {
+    if (!confirm(`Delete ${unit.name}? Its parts stay in the catalog without a slot.`)) return;
+    store.removeUnit(id);
+    go('#/storage');
+  });
+}
+
+// ---------- Slot ----------
+
+function neighborSlots(unit, slot) {
+  const all = unit.rows.flatMap((cols, r) => Array.from({ length: cols }, (_, c) => slotId(unit.id, r + 1, c + 1)));
+  const i = all.indexOf(slot.id);
+  return { prev: all[i - 1], next: all[i + 1] };
+}
+
+function renderSlot({ id }) {
+  const slot = store.getSlot(id);
+  const unit = slot && store.getUnit(slot.unitId);
+  if (!slot || !unit) {
+    view.innerHTML = '<div class="card empty">That slot no longer exists. <a href="#/storage">Back to storage</a></div>';
+    return;
+  }
+  const { prev, next } = neighborSlots(unit, slot);
+  const parts = slot.partNums.map((n) => store.getPart(n) ?? { partNum: n, altNums: [], name: '', imageUrl: '' });
+
+  view.innerHTML = `
+    <div class="slot-nav">
+      ${prev ? `<a class="btn" href="${slotHref(prev)}">← ${esc(store.codeOf(store.getSlot(prev)))}</a>` : '<span></span>'}
+      <a href="#/storage">${esc(unit.code)} · ${esc(unit.name)}</a>
+      ${next ? `<a class="btn" href="${slotHref(next)}">${esc(store.codeOf(store.getSlot(next)))} →</a>` : '<span></span>'}
+    </div>
+    <h2 class="slot-title">📦 ${esc(store.codeOf(slot))}</h2>
+
+    <div class="card" style="padding:0">
+      <ul class="part-list">
+        ${
+          parts.length
+            ? parts
+                .map(
+                  (p) => `<li class="part">
+                    <a class="part-link" href="${partHref(p.partNum)}">${thumb(p.imageUrl)}
+                      <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
+                      <div class="part-meta"><span>${esc(numsText(p))}</span></div></div></a>
+                    <div class="part-slots">
+                      <button class="small" data-move="${esc(p.partNum)}">Move</button>
+                      <button class="small danger" data-remove="${esc(p.partNum)}" aria-label="Remove">✕</button>
+                    </div>
+                  </li>`,
+                )
+                .join('')
+            : '<li class="empty">Empty. Add the part numbers on this drawer\'s label below.</li>'
+        }
+      </ul>
+    </div>
+
+    <form id="add-form" class="card">
+      <label for="nums" style="margin-top:0">Add part numbers</label>
+      <div class="row">
+        <input id="nums" list="part-nums" placeholder="e.g. 3623, 63864" autocomplete="off" />
+        <datalist id="part-nums">${partNumOptions()}</datalist>
+        <button class="primary" style="flex:0 0 auto">Add</button>
+      </div>
+      <p class="muted">Separate several numbers with commas. Known parts get their names filled in.</p>
+    </form>
+
+    <form id="slot-form" class="card">
+      <label for="label" style="margin-top:0">Slot name (optional)</label>
+      <input id="label" name="label" value="${esc(slot.label)}" placeholder="e.g. Hinges, or Clips & bars" />
+      <label class="check"><input type="checkbox" name="needsLabel" ${slot.needsLabel ? 'checked' : ''} /> Needs a printed label</label>
+      <div class="actions"><button class="primary">Save</button></div>
+    </form>
+
+    <div class="card">${unitMap(unit, { highlight: new Set([slot.id]), compact: true })}</div>
+  `;
+
+  const nums = view.querySelector('#nums');
+  view.querySelector('#add-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!parseNums(nums.value).length) return;
+    try {
+      const added = store.addPartsToSlot(slot.id, nums.value);
+      toast(added.length ? `Added ${added.map((p) => p.name || p.partNum).join(', ')}` : 'Already in this slot');
+      renderSlot({ id });
+      view.querySelector('#nums').focus();
     } catch (err) {
       toast(err.message);
     }
   });
 
-  view.querySelectorAll('.bin-card[data-id]').forEach((card) => {
-    const id = card.dataset.id;
-    card.querySelector('[data-act="rename"]').addEventListener('click', () => {
-      const loc = store.getLocation(id);
-      const name = prompt('Bin name', loc.name);
-      if (!name?.trim()) return;
-      const description = prompt('Where is it? (optional)', loc.description) ?? loc.description;
-      store.updateLocation(id, { name, description });
-      renderBins();
-    });
-    card.querySelector('[data-act="delete"]').addEventListener('click', () => {
-      if (!confirm('Delete this bin? Its parts will move to "Unsorted".')) return;
-      store.removeLocation(id);
-      renderBins();
-    });
+  view.querySelector('#slot-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    store.updateSlot(slot.id, { label: fd.get('label'), needsLabel: fd.has('needsLabel') });
+    toast('Saved');
+    renderSlot({ id });
   });
 
-  view.querySelector('#print')?.addEventListener('click', () => window.print());
+  view.querySelectorAll('[data-remove]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      store.removePartFromSlot(slot.id, btn.dataset.remove);
+      renderSlot({ id });
+    }),
+  );
+  view.querySelectorAll('[data-move]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const code = prompt('Move to which slot? (e.g. A-3-2)');
+      if (!code) return;
+      const target = store.findSlotByCode(code);
+      if (!target) {
+        toast('No slot with that code.');
+        return;
+      }
+      store.movePart(btn.dataset.move, slot.id, target.id);
+      toast(`Moved to ${store.codeOf(target)}`);
+      renderSlot({ id });
+    }),
+  );
 }
+
+// ---------- Labels ----------
+
+function labelHtml(slot, style) {
+  const code = store.codeOf(slot);
+  const parts = slot.partNums.map((n) => store.getPart(n) ?? { partNum: n, altNums: [], name: '', imageUrl: '' });
+  if (style === 'code') {
+    return `<div class="label code-only"><strong>${esc(code)}</strong></div>`;
+  }
+  return `<div class="label">
+    <div class="label-code">${esc(code)}</div>
+    ${slot.label ? `<div class="label-name">${esc(slot.label)}</div>` : ''}
+    ${parts
+      .map(
+        (p) => `<div class="label-part">
+          ${p.imageUrl ? `<img src="${esc(p.imageUrl)}" alt="" />` : ''}
+          <div><div class="label-name">${esc(p.name || '')}</div><div class="label-num">${esc([p.partNum, ...p.altNums].join(' / '))}</div></div>
+        </div>`,
+      )
+      .join('')}
+  </div>`;
+}
+
+function renderLabels({ params }) {
+  const source = params.get('unit') ?? 'queue';
+  const style = params.get('style') ?? 'full';
+  const queue = store.state.slots.filter((s) => s.needsLabel);
+  const slots =
+    source === 'queue'
+      ? queue
+      : store.state.slots.filter((s) => s.unitId === source && (s.partNums.length || s.label));
+  slots.sort((a, b) => store.codeOf(a).localeCompare(store.codeOf(b), undefined, { numeric: true }));
+  const link = (patch) => {
+    const qs = new URLSearchParams({ unit: source, style, ...patch });
+    return `#/labels?${qs}`;
+  };
+
+  view.innerHTML = `
+    <div class="no-print">
+      <h2>Labels</h2>
+      <div class="card">
+        <label style="margin-top:0">Which slots?</label>
+        <div class="chips wrap">
+          <a class="chip ${source === 'queue' ? 'active' : ''}" href="${link({ unit: 'queue' })}">Needs a label (${queue.length})</a>
+          ${store.state.units
+            .map((u) => `<a class="chip ${source === u.id ? 'active' : ''}" href="${link({ unit: u.id })}">${esc(u.code)} · ${esc(u.name)}</a>`)
+            .join('')}
+        </div>
+        <label>Style</label>
+        <div class="chips wrap">
+          <a class="chip ${style === 'full' ? 'active' : ''}" href="${link({ style: 'full' })}">Full label</a>
+          <a class="chip ${style === 'code' ? 'active' : ''}" href="${link({ style: 'code' })}">Code sticker only</a>
+        </div>
+        <p class="muted">${
+          style === 'code'
+            ? 'Small stickers with just the slot code, to add next to the Brick Architect labels you already have.'
+            : 'Slot code, part names and numbers (and pictures, when a part has one).'
+        }</p>
+        <div class="actions">
+          <button class="primary" id="print" ${slots.length ? '' : 'disabled'}>🖨️ Print ${slots.length} label${slots.length === 1 ? '' : 's'}</button>
+          ${source === 'queue' && slots.length ? '<button id="done">✓ Mark as labeled</button>' : ''}
+        </div>
+      </div>
+    </div>
+    ${
+      slots.length
+        ? `<div class="labels ${style === 'code' ? 'codes' : ''}">${slots.map((s) => labelHtml(s, style)).join('')}</div>`
+        : '<div class="card empty no-print">No slots to label here. Slots are added to "Needs a label" when you put parts in them.</div>'
+    }
+  `;
+  view.querySelector('#print')?.addEventListener('click', () => window.print());
+  view.querySelector('#done')?.addEventListener('click', () => {
+    slots.forEach((s) => store.updateSlot(s.id, { needsLabel: false }));
+    toast('Marked as labeled');
+    renderLabels({ params });
+  });
+}
+
+// ---------- Settings ----------
 
 function download(filename, text) {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
@@ -483,11 +743,11 @@ function renderSettings() {
     <h2>Settings</h2>
     <div class="card">
       <h3 style="margin-top:0">Share with the family</h3>
-      <p class="muted">The collection is saved on this device. Export a file and open it on another
-        phone/tablet (via email, AirDrop, Google Drive…) to share. <strong>Merge</strong> keeps both
+      <p class="muted">The catalog is saved on this device. Export a file and open it on another
+        phone or tablet (via email, AirDrop, Google Drive…) to share. <strong>Merge</strong> keeps both
         sets of changes; <strong>Replace</strong> overwrites this device.</p>
       <div class="actions">
-        <button id="export" class="primary">⬇️ Export collection</button>
+        <button id="export" class="primary">⬇️ Export catalog</button>
         <label class="btn" style="margin:0;color:inherit;font-size:1rem">⬆️ Import…
           <input id="import" type="file" accept="application/json,.json" hidden />
         </label>
@@ -498,7 +758,7 @@ function renderSettings() {
     </div>
     <form id="settings-form" class="card">
       <h3 style="margin-top:0">Online part lookup</h3>
-      <p class="muted">Photo identification works without setup. To look parts up by number or name,
+      <p class="muted">Photo identification works without setup. To look up any part by number or name,
         create a free account at rebrickable.com → Settings → API and paste your key here.
         The key stays on this device and is never included in exports.</p>
       <label for="rbKey">Rebrickable API key</label>
@@ -509,13 +769,13 @@ function renderSettings() {
       <h3 style="margin-top:0">Data</h3>
       <div class="actions">
         <button id="sample">🧪 Load sample data</button>
-        <button id="reset" class="danger">Erase collection on this device</button>
+        <button id="reset" class="danger">Erase catalog on this device</button>
       </div>
     </div>
   `;
 
   view.querySelector('#export').addEventListener('click', () => {
-    download(`lego-collection-${new Date().toISOString().slice(0, 10)}.json`, store.exportJSON());
+    download(`lego-catalog-${new Date().toISOString().slice(0, 10)}.json`, store.exportJSON());
   });
   view.querySelector('#import').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
@@ -536,14 +796,14 @@ function renderSettings() {
     toast('Saved');
   });
   view.querySelector('#sample').addEventListener('click', () => {
-    if (store.state.parts.length && !confirm('Add sample bins and parts to your collection?')) return;
+    if (store.state.parts.length && !confirm('Add the sample storage units and parts to your catalog?')) return;
     store.importJSON(JSON.stringify(SAMPLE), { merge: true });
     toast('Sample data loaded');
   });
   view.querySelector('#reset').addEventListener('click', () => {
-    if (!confirm('Erase all parts and bins on this device? Export first if you want a backup.')) return;
+    if (!confirm('Erase all storage units, slots and parts on this device? Export first if you want a backup.')) return;
     store.reset();
-    toast('Collection erased');
+    toast('Catalog erased');
   });
 }
 
@@ -552,16 +812,19 @@ function renderSettings() {
 const routes = {
   find: renderFind,
   identify: renderIdentify,
-  add: renderPartForm,
-  edit: renderPartForm,
-  bins: renderBins,
+  part: renderPart,
+  storage: renderStorage,
+  unit: renderUnit,
+  slot: renderSlot,
+  labels: renderLabels,
   settings: renderSettings,
 };
+const TAB_FOR = { part: 'find', unit: 'storage', slot: 'storage' };
 
 function render() {
   const route = parseRoute();
   const fn = routes[route.name] ?? renderFind;
-  const tab = route.name === 'edit' ? 'find' : route.name;
+  const tab = TAB_FOR[route.name] ?? route.name;
   document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   fn(route);
   updateSummary();

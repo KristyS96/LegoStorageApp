@@ -1,34 +1,42 @@
-// Small demo collection for trying the app out.
-const loc = (id, name, description) => ({ id, name, description });
-const part = (id, partNum, name, category, colorId, quantity, locationId, notes = '') => ({
-  id, partNum, name, category, colorId, quantity, locationId, notes, imageUrl: '', updatedAt: 1,
+// Small demo catalog for trying the app out.
+import { CATALOG } from './catalog.js';
+
+const unit = (id, code, name, description, rows) => ({ id, code, name, description, rows });
+const slot = (unitId, row, col, partNums, label = '') => ({
+  id: `${unitId}:${row}:${col}`, unitId, row, col, partNums, label, needsLabel: false, updatedAt: 1,
 });
 
+const units = [
+  unit('sample_unit_a', 'A', 'Plate & tile cabinet', 'Playroom, left wall', [6, 6, 3]),
+  unit('sample_unit_b', 'B', 'Specialty case', 'Shelf by the window', [4, 4]),
+  unit('sample_unit_c', 'C', 'Brick case', 'Under the table', [2, 2]),
+];
+
+const slots = [
+  slot('sample_unit_a', 1, 1, ['3068']),
+  slot('sample_unit_a', 1, 2, ['6636']),
+  slot('sample_unit_a', 1, 3, ['15573']),
+  slot('sample_unit_a', 1, 4, ['3623', '63864']),
+  slot('sample_unit_a', 2, 1, ['3069']),
+  slot('sample_unit_a', 2, 2, ['69729', '26603']),
+  slot('sample_unit_a', 2, 3, ['87079']),
+  slot('sample_unit_a', 2, 6, ['2420', '15397']),
+  slot('sample_unit_a', 3, 1, ['3023']),
+  slot('sample_unit_a', 3, 2, ['3710']),
+  slot('sample_unit_a', 3, 3, ['3666']),
+  slot('sample_unit_b', 1, 1, ['4735'], 'Clips & bars'),
+  slot('sample_unit_b', 1, 2, [], 'Hinges'),
+  slot('sample_unit_c', 1, 1, ['3005', '3004']),
+  slot('sample_unit_c', 1, 2, ['3003', '3001']),
+  slot('sample_unit_c', 2, 1, ['3010', '3009']),
+];
+
+const used = new Set(slots.flatMap((s) => s.partNums));
+
 export const SAMPLE = {
-  version: 1,
-  locations: [
-    loc('sample_loc_a1', 'A1', 'Drawer tower, top left – basic bricks'),
-    loc('sample_loc_a2', 'A2', 'Drawer tower – plates'),
-    loc('sample_loc_b1', 'B1', 'Drawer tower – slopes & tiles'),
-    loc('sample_loc_tech', 'Technic Tub', 'Blue tub under the desk'),
-    loc('sample_loc_figs', 'Minifig Case', 'Clear case on the shelf'),
-  ],
-  parts: [
-    part('sample_p1', '3001', 'Brick 2 x 4', 'Bricks', 4, 24, 'sample_loc_a1'),
-    part('sample_p2', '3001', 'Brick 2 x 4', 'Bricks', 15, 18, 'sample_loc_a1'),
-    part('sample_p3', '3003', 'Brick 2 x 2', 'Bricks', 14, 31, 'sample_loc_a1'),
-    part('sample_p4', '3004', 'Brick 1 x 2', 'Bricks', 1, 40, 'sample_loc_a1'),
-    part('sample_p5', '3010', 'Brick 1 x 4', 'Bricks', 0, 12, 'sample_loc_a1'),
-    part('sample_p6', '3020', 'Plate 2 x 4', 'Plates', 71, 22, 'sample_loc_a2'),
-    part('sample_p7', '3023', 'Plate 1 x 2', 'Plates', 72, 55, 'sample_loc_a2'),
-    part('sample_p8', '3024', 'Plate 1 x 1', 'Plates', 2, 80, 'sample_loc_a2'),
-    part('sample_p9', '3039', 'Slope 45° 2 x 2', 'Slopes', 4, 14, 'sample_loc_b1', 'Roof pieces'),
-    part('sample_p10', '3069b', 'Tile 1 x 2 with Groove', 'Tiles', 0, 30, 'sample_loc_b1'),
-    part('sample_p11', '3068b', 'Tile 2 x 2 with Groove', 'Tiles', 19, 9, 'sample_loc_b1'),
-    part('sample_p12', '2780', 'Technic Pin with Friction Ridges', 'Technic', 0, 120, 'sample_loc_tech'),
-    part('sample_p13', '32523', 'Technic Beam 1 x 3 Thick', 'Technic', 72, 16, 'sample_loc_tech'),
-    part('sample_p14', '4624', 'Wheel 8mm D. x 6mm', 'Wheels & Vehicles', 15, 8, null, 'Found under the couch'),
-    part('sample_p15', '973', 'Minifig Torso', 'Minifigures', 1, 6, 'sample_loc_figs', 'Police torsos'),
-  ],
+  version: 2,
+  units,
+  slots,
+  parts: CATALOG.filter((p) => used.has(p.partNum)).map((p) => ({ ...p, imageUrl: '', updatedAt: 1 })),
   settings: {},
 };
