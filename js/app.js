@@ -1,7 +1,8 @@
-import { createStore, normNum, parseNums, slotId, slotCode } from './store.js';
+import { createStore, normNum, parseNums, parseRows, slotId, slotCode } from './store.js';
 import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart } from './identify.js';
 import { guessCategory } from './sorting.js';
+import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
@@ -435,6 +436,7 @@ function renderStorage() {
 
   view.innerHTML = `
     <h2>Storage</h2>
+    <a class="btn primary-outline wide" href="#/scan">📷 Add a storage unit from a photo</a>
     ${units
       .map(
         (u) => `<div class="card">
@@ -537,6 +539,195 @@ function renderUnit({ id }) {
     if (!confirm(`Delete ${unit.name}? Its parts stay in the catalog without a slot.`)) return;
     store.removeUnit(id);
     go('#/storage');
+  });
+}
+
+// ---------- Add a storage unit from a photo ----------
+
+function renderScan() {
+  const hasKey = Boolean(store.state.settings.anthropicKey);
+  view.innerHTML = `
+    <p><a href="#/storage">← Storage</a></p>
+    <h2>Add a storage unit from a photo</h2>
+    ${
+      hasKey
+        ? ''
+        : `<div class="card notice">This uses Claude to read the labels, which needs an Anthropic API key.
+            Add yours in <a href="#/settings">Settings</a> first.</div>`
+    }
+    <form id="scan-form" class="card">
+      <div class="grid2">
+        <div>
+          <label for="s-name">Name</label>
+          <input id="s-name" name="name" placeholder="e.g. Brick cabinet" required />
+        </div>
+        <div>
+          <label for="s-code">Code (letter on its labels)</label>
+          <input id="s-code" name="code" placeholder="${esc(store.nextUnitCode())}" maxlength="3" />
+        </div>
+      </div>
+      <label for="s-desc">Where is it? (optional)</label>
+      <input id="s-desc" name="description" placeholder="e.g. Garage, back wall" />
+      <label class="photo-drop" for="s-photo" style="margin-top:14px">
+        <span>📷</span>
+        <strong>Photo of the whole unit, straight on</strong>
+        <small class="muted">All four edges in frame, labels facing the camera, no glare.</small>
+        <input id="s-photo" type="file" accept="image/*" capture="environment" />
+      </label>
+      <div id="s-preview"></div>
+      <div class="actions">
+        <button class="primary" id="s-go" disabled>Read the labels</button>
+      </div>
+      <p class="muted">Takes about a minute. Each photo is sent to Anthropic and costs roughly 10–20¢ on your API key.
+        You'll check everything before it's saved.</p>
+    </form>
+    <div id="s-status"></div>
+  `;
+
+  const form = view.querySelector('#scan-form');
+  const readBtn = view.querySelector('#s-go');
+  const status = view.querySelector('#s-status');
+  let image = null;
+
+  view.querySelector('#s-photo').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      image = await prepareImage(file);
+      view.querySelector('#s-preview').innerHTML = `<img class="scan-photo" src="${image.previewUrl}" alt="Your photo" />`;
+      readBtn.disabled = !store.state.settings.anthropicKey;
+    } catch {
+      toast('Could not open that photo.');
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!image) return;
+    const unitInput = Object.fromEntries(new FormData(form));
+    if (!unitInput.name.trim()) {
+      toast('Give the storage unit a name.');
+      return;
+    }
+    readBtn.disabled = true;
+    status.innerHTML = '<div class="card empty">🔎 Reading the labels… this can take a minute.</div>';
+    try {
+      const scan = await scanUnit(image, store.state.settings.anthropicKey);
+      if (!scan.rows.length) throw new Error('No drawers found in this photo. Try a straighter, closer shot.');
+      renderScanReview(unitInput, image, scan);
+    } catch (err) {
+      status.innerHTML = `<div class="card empty">⚠️ ${esc(err.message)}</div>`;
+      readBtn.disabled = false;
+    }
+  });
+}
+
+function renderScanReview(unitInput, image, scan) {
+  // Each drawer: the text the family edits, plus what Claude read (for names).
+  let rows = scan.rows.map((row) => row.map((cell) => ({ ...cell, text: cellToText(cell) })));
+  const uncertainCount = rows.flat().filter((c) => c.uncertain).length;
+
+  view.innerHTML = `
+    <h2>Check what was read</h2>
+    <div class="card">
+      <img class="scan-photo" src="${image.previewUrl}" alt="Your photo" />
+      ${scan.notes ? `<p class="notice">📝 ${esc(scan.notes)}</p>` : ''}
+      <p class="muted">Compare each drawer with its label and fix any numbers.
+        ${uncertainCount ? `<strong>${uncertainCount} drawer${uncertainCount === 1 ? ' was' : 's were'} hard to read</strong> and ${uncertainCount === 1 ? 'is' : 'are'} marked in yellow.` : ''}
+        Separate parts with commas, and alternate numbers for the same part with a slash (15573/3794).</p>
+      <label for="r-rows">Drawers in each row, top to bottom</label>
+      <input id="r-rows" value="${rows.map((r) => r.length).join(', ')}" />
+    </div>
+    <div class="card"><div id="r-map"></div></div>
+    <div class="card" id="r-list"></div>
+    <div class="card">
+      <label class="check" style="margin-top:0"><input type="checkbox" id="r-labeled" checked /> These drawers already have printed labels</label>
+      <div class="actions">
+        <button class="primary" id="r-save">Save ${esc(unitInput.name)}</button>
+        <a class="btn" href="#/scan">Start over</a>
+      </div>
+    </div>
+  `;
+
+  const list = view.querySelector('#r-list');
+
+  function syncTexts() {
+    list.querySelectorAll('input[data-r]').forEach((input) => {
+      rows[input.dataset.r][input.dataset.c].text = input.value;
+    });
+  }
+
+  function drawMap() {
+    view.querySelector('#r-map').innerHTML = `<div class="unit-map">${rows
+      .map(
+        (row, r) => `<div class="map-row" style="grid-template-columns:repeat(${row.length},1fr)">${row
+          .map(
+            (cell, c) => `<button type="button" class="cell ${cell.text.trim() ? 'filled' : ''} ${cell.uncertain ? 'hit' : ''}" data-jump="r-${r}-${c}">
+              <span class="code">${r + 1}-${c + 1}</span><span class="cell-text">${esc(cell.text)}</span></button>`,
+          )
+          .join('')}</div>`,
+      )
+      .join('')}</div>`;
+  }
+
+  function drawList() {
+    list.innerHTML = rows
+      .map(
+        (row, r) => `<h3 style="margin-top:${r ? 16 : 0}px">Row ${r + 1}</h3>${row
+          .map((cell, c) => {
+            const names = cell.parts.map((p) => p.name).filter(Boolean).join(' · ');
+            return `<div class="review-cell ${cell.uncertain ? 'uncertain' : ''}" id="r-${r}-${c}">
+              <span class="slot-badge">${esc(`${unitInput.code?.trim().toUpperCase() || store.nextUnitCode()}-${r + 1}-${c + 1}`)}</span>
+              <div>
+                <input data-r="${r}" data-c="${c}" value="${esc(cell.text)}" placeholder="empty" autocomplete="off" aria-label="Drawer ${r + 1}-${c + 1}" />
+                ${names ? `<small class="muted">${esc(names)}</small>` : ''}
+              </div>
+            </div>`;
+          })
+          .join('')}`,
+      )
+      .join('');
+  }
+
+  drawMap();
+  drawList();
+  view.querySelector('#r-map').addEventListener('click', (e) => {
+    const jump = e.target.closest('[data-jump]');
+    if (!jump) return;
+    const target = view.querySelector(`#${jump.dataset.jump}`);
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.querySelector('input').focus({ preventScroll: true });
+  });
+  list.addEventListener('input', () => {
+    syncTexts();
+    drawMap();
+  });
+
+  view.querySelector('#r-rows').addEventListener('change', (e) => {
+    const layout = parseRows(e.target.value);
+    if (!layout.length) {
+      toast('Enter how many drawers are in each row, e.g. 6, 6, 3.');
+      return;
+    }
+    syncTexts();
+    rows = layout.map((cols, r) =>
+      Array.from({ length: cols }, (_, c) => rows[r]?.[c] ?? { parts: [], uncertain: false, text: '' }),
+    );
+    drawMap();
+    drawList();
+  });
+
+  view.querySelector('#r-save').addEventListener('click', () => {
+    syncTexts();
+    const cells = rows.map((row) => row.map((cell) => textToParts(cell.text, cell.parts)));
+    try {
+      const unit = store.addScannedUnit(unitInput, cells, { labeled: view.querySelector('#r-labeled').checked });
+      const filled = cells.flat().filter((parts) => parts.length).length;
+      toast(`Saved ${unit.code} · ${unit.name}: ${filled} drawers`);
+      go('#/storage');
+    } catch (err) {
+      toast(err.message);
+    }
   });
 }
 
@@ -763,6 +954,12 @@ function renderSettings() {
         The key stays on this device and is never included in exports.</p>
       <label for="rbKey">Rebrickable API key</label>
       <input id="rbKey" name="rebrickableKey" value="${esc(store.state.settings.rebrickableKey)}" autocomplete="off" />
+      <h3>Reading cabinets from photos</h3>
+      <p class="muted">Adding a storage unit from a photo uses Claude to read the drawer labels. Create an API key at
+        console.anthropic.com → API keys and paste it here. Each photo costs roughly 10–20¢. The key stays on this
+        device and is never included in exports; each family member who scans adds their own.</p>
+      <label for="anKey">Anthropic API key</label>
+      <input id="anKey" name="anthropicKey" value="${esc(store.state.settings.anthropicKey)}" autocomplete="off" placeholder="sk-ant-…" />
       <div class="actions"><button class="primary">Save</button></div>
     </form>
     <div class="card">
@@ -792,7 +989,10 @@ function renderSettings() {
   });
   view.querySelector('#settings-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    store.updateSettings({ rebrickableKey: view.querySelector('#rbKey').value.trim() });
+    store.updateSettings({
+      rebrickableKey: view.querySelector('#rbKey').value.trim(),
+      anthropicKey: view.querySelector('#anKey').value.trim(),
+    });
     toast('Saved');
   });
   view.querySelector('#sample').addEventListener('click', () => {
@@ -814,12 +1014,13 @@ const routes = {
   identify: renderIdentify,
   part: renderPart,
   storage: renderStorage,
+  scan: renderScan,
   unit: renderUnit,
   slot: renderSlot,
   labels: renderLabels,
   settings: renderSettings,
 };
-const TAB_FOR = { part: 'find', unit: 'storage', slot: 'storage' };
+const TAB_FOR = { part: 'find', unit: 'storage', slot: 'storage', scan: 'storage' };
 
 function render() {
   const route = parseRoute();

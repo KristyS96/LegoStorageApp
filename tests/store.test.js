@@ -168,3 +168,34 @@ test('merging another unit with the same code gives it a free code', () => {
   b.importJSON(a.exportJSON(), { merge: true });
   assert.deepEqual(b.state.units.map((u) => u.code), ['A', 'B']);
 });
+
+test('saves a unit read from a photo, filling names and alternates from the labels', () => {
+  const store = createStore(memoryBackend());
+  store.ensurePart('99999');
+  store.savePart('99999', { name: 'Family name' });
+  const unit = store.addScannedUnit(
+    { name: 'Brick cabinet' },
+    [
+      [[], [{ partNum: '3068', altNums: [], name: 'Tile 2 x 2 (as read)' }]],
+      [[{ partNum: '88888', altNums: ['77777'], name: 'Slope 45 2 x 2' }, { partNum: '99999', altNums: [], name: 'Read name' }]],
+    ],
+    { labeled: true },
+  );
+  assert.equal(unit.code, 'A');
+  assert.deepEqual(unit.rows, [2, 1]);
+  assert.equal(store.getPart('3068').name, 'Tile 2 x 2', 'built-in name wins');
+  assert.equal(store.getPart('77777').name, 'Slope 45 2 x 2', 'new part named from its label, found by alternate');
+  assert.equal(store.getPart('88888').category, 'Slopes');
+  assert.equal(store.getPart('99999').name, 'Family name', 'never overwrites what the family typed');
+  assert.deepEqual(store.getSlot(slotId(unit.id, 2, 1)).partNums, ['88888', '99999']);
+  assert.equal(store.getSlot(slotId(unit.id, 1, 2)).needsLabel, false);
+  assert.equal(store.getSlot(slotId(unit.id, 1, 1)).partNums.length, 0, 'empty drawer stays free');
+});
+
+test('the Anthropic key is never exported and survives a replace import', () => {
+  const a = createStore(memoryBackend());
+  a.updateSettings({ anthropicKey: 'sk-ant-secret' });
+  assert.ok(!a.exportJSON().includes('sk-ant-secret'));
+  a.importJSON(createStore(memoryBackend()).exportJSON());
+  assert.equal(a.state.settings.anthropicKey, 'sk-ant-secret');
+});
