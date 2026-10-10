@@ -125,6 +125,8 @@ function normalizePart(input, existing = {}) {
     name,
     category: clean(input.category ?? existing.category) || guessCategory(name) || 'Other',
     imageUrl: clean(input.imageUrl ?? existing.imageUrl),
+    // Number Brick Architect files the label under, when it isn't the part number.
+    labelNum: clean(input.labelNum ?? existing.labelNum),
     updatedAt: input.updatedAt ?? Date.now(),
   };
 }

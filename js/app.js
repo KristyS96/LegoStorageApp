@@ -3,6 +3,7 @@ import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart } from './identify.js';
 import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
+import { brickArchitectLabelUrl, labelNumber } from './labels.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
@@ -52,6 +53,13 @@ function thumb(url) {
   return url
     ? `<img class="thumb" src="${esc(url)}" alt="" loading="lazy" />`
     : '<div class="thumb" aria-hidden="true">🧱</div>';
+}
+
+function baLabelLink(part, text = '🏷️ Label') {
+  const url = brickArchitectLabelUrl(part);
+  return url
+    ? `<a class="btn small ba-link" href="${esc(url)}" target="_blank" rel="noopener" title="Brick Architect label ${esc(labelNumber(part))}.lbx">${text}</a>`
+    : '';
 }
 
 function numsText(part) {
@@ -358,6 +366,16 @@ function renderPart({ id: num, params }) {
           <select id="category" name="category">
             ${CATEGORIES.map((c) => `<option ${p.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
           </select>
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label for="labelNum">Brick Architect label number</label>
+          <input id="labelNum" name="labelNum" value="${esc(p.labelNum ?? '')}" placeholder="${esc(p.partNum)}" />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          ${baLabelLink(p, '🏷️ Download label (.lbx)')}
         </div>
       </div>
       <label for="imageUrl">Picture URL (optional)</label>
@@ -805,6 +823,7 @@ function renderSlot({ id }) {
                       <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
                       <div class="part-meta"><span>${esc(numsText(p))}</span></div></div></a>
                     <div class="part-slots">
+                      ${baLabelLink(p)}
                       <button class="small" data-move="${esc(p.partNum)}">Move</button>
                       <button class="small danger" data-remove="${esc(p.partNum)}" aria-label="Remove">✕</button>
                     </div>
@@ -910,7 +929,7 @@ function labelHtml(slot, style) {
 
 function renderLabels({ params }) {
   const source = params.get('unit') ?? 'queue';
-  const style = params.get('style') ?? 'full';
+  const style = params.get('style') ?? 'ba';
   const queue = store.state.slots.filter((s) => s.needsLabel);
   const slots =
     source === 'queue'
@@ -921,6 +940,11 @@ function renderLabels({ params }) {
     const qs = new URLSearchParams({ unit: source, style, ...patch });
     return `#/labels?${qs}`;
   };
+  // Brick Architect labels are per part: one file for each part in each slot.
+  const partOf = (n) => store.getPart(n) ?? { partNum: n, altNums: [], name: '' };
+  const baParts = [
+    ...new Map(slots.flatMap((s) => s.partNums.map(partOf)).map((p) => [labelNumber(p), p])).values(),
+  ];
 
   view.innerHTML = `
     <div class="no-print">
@@ -935,27 +959,60 @@ function renderLabels({ params }) {
         </div>
         <label>Style</label>
         <div class="chips wrap">
+          <a class="chip ${style === 'ba' ? 'active' : ''}" href="${link({ style: 'ba' })}">Brick Architect</a>
           <a class="chip ${style === 'full' ? 'active' : ''}" href="${link({ style: 'full' })}">Full label</a>
           <a class="chip ${style === 'code' ? 'active' : ''}" href="${link({ style: 'code' })}">Code sticker only</a>
         </div>
         <p class="muted">${
-          style === 'code'
-            ? 'Small stickers with just the slot code, to add next to the Brick Architect labels you already have.'
-            : 'Slot code, part names and numbers (and pictures, when a part has one).'
+          style === 'ba'
+            ? 'Official Brick Architect labels (12 mm), one per part. Open the downloaded .lbx files in P-touch Editor to print.'
+            : style === 'code'
+              ? 'Small stickers with just the slot code.'
+              : 'Slot code, part names and numbers (and pictures, when a part has one).'
         }</p>
         <div class="actions">
-          <button class="primary" id="print" ${slots.length ? '' : 'disabled'}>🖨️ Print ${slots.length} label${slots.length === 1 ? '' : 's'}</button>
+          ${
+            style === 'ba'
+              ? `<button class="primary" id="ba-all" ${baParts.length ? '' : 'disabled'}>⬇️ Download ${baParts.length} label${baParts.length === 1 ? '' : 's'}</button>`
+              : `<button class="primary" id="print" ${slots.length ? '' : 'disabled'}>🖨️ Print ${slots.length} label${slots.length === 1 ? '' : 's'}</button>`
+          }
           ${source === 'queue' && slots.length ? '<button id="done">✓ Mark as labeled</button>' : ''}
         </div>
       </div>
     </div>
     ${
-      slots.length
+      slots.length && style === 'ba'
+        ? `<div class="card ba-list" style="padding:0"><ul class="part-list">${slots
+            .filter((s) => s.partNums.length)
+            .map((s) =>
+              s.partNums
+                .map(partOf)
+                .map(
+                  (p) => `<li class="part"><div class="part-link"><span class="slot-badge">${esc(store.codeOf(s))}</span>
+                    <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
+                    <div class="part-meta"><span>#${esc(labelNumber(p))}.lbx</span></div></div></div>
+                    <div class="part-slots">${baLabelLink(p, '⬇️ Label')}</div></li>`,
+                )
+                .join(''),
+            )
+            .join('')}</ul></div>`
+        : slots.length
         ? `<div class="labels ${style === 'code' ? 'codes' : ''}">${slots.map((s) => labelHtml(s, style)).join('')}</div>`
         : '<div class="card empty no-print">No slots to label here. Slots are added to "Needs a label" when you put parts in them.</div>'
     }
   `;
   view.querySelector('#print')?.addEventListener('click', () => window.print());
+  view.querySelector('#ba-all')?.addEventListener('click', () => {
+    // Hidden frames download each file without opening a tab per label (pop-up blockers stop those).
+    baParts.forEach((p, i) =>
+      setTimeout(() => {
+        const frame = Object.assign(document.createElement('iframe'), { src: brickArchitectLabelUrl(p), hidden: true });
+        document.body.append(frame);
+        setTimeout(() => frame.remove(), 60000);
+      }, i * 600),
+    );
+    toast(`Downloading ${baParts.length} label${baParts.length === 1 ? '' : 's'}… your browser may ask to allow several downloads.`);
+  });
   view.querySelector('#done')?.addEventListener('click', () => {
     slots.forEach((s) => store.updateSlot(s.id, { needsLabel: false }));
     toast('Marked as labeled');
