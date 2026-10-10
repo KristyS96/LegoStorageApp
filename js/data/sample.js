@@ -1,5 +1,7 @@
 // Small demo collection for trying the app out.
-const loc = (id, name, description) => ({ id, name, description });
+const loc = (id, name, description, categories = [], partNums = [], colorIds = []) => ({
+  id, name, description, categories, partNums, colorIds,
+});
 const part = (id, partNum, name, category, colorId, quantity, locationId, notes = '') => ({
   id, partNum, name, category, colorId, quantity, locationId, notes, imageUrl: '', updatedAt: 1,
 });
@@ -7,11 +9,12 @@ const part = (id, partNum, name, category, colorId, quantity, locationId, notes 
 export const SAMPLE = {
   version: 1,
   locations: [
-    loc('sample_loc_a1', 'A1', 'Drawer tower, top left – basic bricks'),
-    loc('sample_loc_a2', 'A2', 'Drawer tower – plates'),
-    loc('sample_loc_b1', 'B1', 'Drawer tower – slopes & tiles'),
-    loc('sample_loc_tech', 'Technic Tub', 'Blue tub under the desk'),
-    loc('sample_loc_figs', 'Minifig Case', 'Clear case on the shelf'),
+    loc('sample_loc_a1', 'A1', 'Drawer tower, top left – basic bricks', ['Bricks']),
+    loc('sample_loc_a2', 'A2', 'Drawer tower – plates', ['Plates']),
+    loc('sample_loc_b1', 'B1', 'Drawer tower – slopes & tiles', ['Slopes', 'Tiles', 'Wedges']),
+    loc('sample_loc_tech', 'Technic Tub', 'Blue tub under the desk', ['Technic', 'Wheels & Vehicles']),
+    loc('sample_loc_figs', 'Minifig Case', 'Clear case on the shelf', ['Minifigures']),
+    loc('sample_loc_red', 'Red Bin', 'Big red tub – all red bricks', ['Bricks'], [], [4]),
   ],
   parts: [
     part('sample_p1', '3001', 'Brick 2 x 4', 'Bricks', 4, 24, 'sample_loc_a1'),

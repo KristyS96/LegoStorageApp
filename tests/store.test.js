@@ -84,3 +84,14 @@ test('recovers from corrupted storage', () => {
   const store = createStore(memoryBackend({ [STORAGE_KEY]: '{not json' }));
   assert.deepEqual(store.state.parts, []);
 });
+
+test('bins keep their sorting rules, and old bins load without them', () => {
+  const store = createStore(memoryBackend());
+  const bin = store.addLocation({ name: 'A1', categories: ['Bricks', 'Round & Cones'], partNums: '3001, 3003 3004', colorIds: ['4'] });
+  assert.deepEqual(bin.categories, ['Bricks', 'Round & Cones']);
+  assert.deepEqual(bin.partNums, ['3001', '3003', '3004']);
+  assert.deepEqual(bin.colorIds, [4]);
+
+  const legacy = createStore(memoryBackend({ [STORAGE_KEY]: JSON.stringify({ parts: [], locations: [{ id: 'l', name: 'Old' }] }) }));
+  assert.deepEqual(legacy.state.locations[0].categories, []);
+});

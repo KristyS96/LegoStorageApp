@@ -1,6 +1,7 @@
 import { createStore } from './store.js';
 import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart } from './identify.js';
+import { binRules, guessCategory, suggestBins } from './sorting.js';
 import { COLORS, getColor } from './data/colors.js';
 import { CATEGORIES } from './data/categories.js';
 import { SAMPLE } from './data/sample.js';
@@ -120,7 +121,7 @@ function wirePartList(listEl) {
 function renderFind({ params }) {
   const state = {
     q: params.get('q') ?? '',
-    category: params.get('category') ?? '',
+    category: params.get('category') || guessCategory(params.get('name')),
     colorId: params.get('color') ?? '',
     locationId: params.get('bin') ?? '',
   };
@@ -199,7 +200,13 @@ function resultCard(r) {
         .map((p) => `${p.quantity} × ${swatch(p.colorId)} in ${binBadge(p.locationId)}`)
         .join('<br>')}</div>`
     : '<div class="owned muted">Not in your collection yet.</div>';
-  const addQs = new URLSearchParams({ partNum: r.partNum, name: r.name, img: r.imageUrl });
+  const category = guessCategory(r.name);
+  const [best] = owned.length ? [] : suggestBins({ partNum: r.partNum, category }, store.state.locations);
+  const sortHtml = best
+    ? `<div class="owned">📥 Sort into ${binBadge(best.location.id)} <span class="muted">(${esc(best.reasons.join(', '))})</span></div>`
+    : '';
+  const addQs = new URLSearchParams({ partNum: r.partNum, name: r.name, img: r.imageUrl, category });
+  if (best) addQs.set('bin', best.location.id);
   return `
     <div class="result">
       ${thumb(r.imageUrl)}
@@ -210,6 +217,7 @@ function resultCard(r) {
           ${r.score != null ? `<span>${Math.round(r.score * 100)}% match</span>` : ''}
         </div>
         ${ownedHtml}
+        ${sortHtml}
         <div class="actions">
           <a class="btn" href="#/add?${esc(addQs.toString())}">➕ Add to collection</a>
           ${owned.length ? `<a class="btn" href="#/find?q=${encodeURIComponent(r.partNum)}">🔍 Show</a>` : ''}
@@ -297,7 +305,7 @@ function renderPartForm({ id, params }) {
     partNum: params.get('partNum') ?? '',
     name: params.get('name') ?? '',
     imageUrl: params.get('img') ?? '',
-    category: params.get('category') ?? '',
+    category: params.get('category') || guessCategory(params.get('name')),
     colorId: Number(params.get('color') ?? store.state.settings.lastColorId ?? -1),
     quantity: 1,
     locationId: params.get('bin') ?? store.state.settings.lastLocationId ?? '',
@@ -324,6 +332,7 @@ function renderPartForm({ id, params }) {
         <div>
           <label for="category">Category</label>
           <select id="category" name="category">
+            <option value="" ${p.category ? '' : 'selected'}>Choose…</option>
             ${CATEGORIES.map((c) => `<option ${p.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
           </select>
         </div>
@@ -336,6 +345,7 @@ function renderPartForm({ id, params }) {
           <input id="quantity" name="quantity" type="number" min="0" value="${p.quantity}" inputmode="numeric" />
         </div>
       </div>
+      <div id="bin-hint" class="hint" aria-live="polite"></div>
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes" placeholder="e.g. from the fire station set">${esc(p.notes)}</textarea>
       <input type="hidden" name="imageUrl" value="${esc(p.imageUrl)}" />
@@ -349,6 +359,43 @@ function renderPartForm({ id, params }) {
   `;
 
   const form = view.querySelector('#part-form');
+  const fields = form.elements;
+  const hint = view.querySelector('#bin-hint');
+  // Once someone picks a bin or category themselves, stop changing it for them.
+  let binTouched = Boolean(existing || params.get('bin'));
+  let categoryTouched = Boolean(existing || p.category);
+  fields.locationId.addEventListener('change', () => (binTouched = true));
+  fields.category.addEventListener('change', () => (categoryTouched = true));
+
+  function suggest() {
+    if (!categoryTouched) fields.category.value = guessCategory(fields.name.value);
+    const suggestions = suggestBins(
+      { partNum: fields.partNum.value, category: fields.category.value, colorId: fields.colorId.value },
+      store.state.locations,
+      store.state.parts.filter((x) => x.id !== existing?.id),
+    );
+    if (!binTouched && suggestions.length) fields.locationId.value = suggestions[0].location.id;
+    hint.innerHTML = suggestions.length
+      ? `Suggested bin${suggestions.length > 1 ? 's' : ''}: ${suggestions
+          .slice(0, 3)
+          .map(
+            (sg) => `<button type="button" class="chip ${fields.locationId.value === sg.location.id ? 'active' : ''}"
+              data-bin="${esc(sg.location.id)}" title="${esc(sg.reasons.join(', '))}">📦 ${esc(sg.location.name)}</button>`,
+          )
+          .join(' ')}`
+      : '';
+  }
+  hint.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-bin]');
+    if (!chip) return;
+    fields.locationId.value = chip.dataset.bin;
+    binTouched = true;
+    suggest();
+  });
+  ['partNum', 'name'].forEach((n) => fields[n].addEventListener('input', suggest));
+  ['colorId', 'category', 'locationId'].forEach((n) => fields[n].addEventListener('change', suggest));
+  suggest();
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(form));
@@ -378,24 +425,41 @@ function renderPartForm({ id, params }) {
   });
 }
 
-function renderBins() {
-  const { locations, parts } = store.state;
+function binStats() {
   const stats = new Map();
-  parts.forEach((p) => {
+  store.state.parts.forEach((p) => {
     const key = p.locationId ?? 'unsorted';
     const s = stats.get(key) ?? { kinds: 0, pcs: 0 };
     s.kinds += 1;
     s.pcs += p.quantity;
     stats.set(key, s);
   });
+  return stats;
+}
+
+// Short human summary of a bin's sorting rules, e.g. "Bricks, Plates · #3001 · Red".
+function rulesSummary(location) {
+  const { categories, partNums, colorIds } = binRules(location);
+  return [
+    categories.join(', '),
+    partNums.map((n) => `#${n}`).join(', '),
+    colorIds.map((id) => getColor(id).name).join(', '),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function renderBins() {
+  const { locations, parts } = store.state;
+  const stats = binStats();
   const unsorted = stats.get('unsorted');
 
   view.innerHTML = `
     <div class="no-print">
-      <h2>Bins & storage</h2>
+      <h2>Bins & containers</h2>
       <form id="bin-form" class="card">
         <div class="row">
-          <input name="name" placeholder="Bin name, e.g. A1 or Red drawer" required />
+          <input name="name" placeholder="Container name, e.g. A1 or Red tub" required />
           <input name="description" placeholder="Where is it? (optional)" />
           <button class="primary" style="flex:0 0 auto">Add bin</button>
         </div>
@@ -405,27 +469,24 @@ function renderBins() {
           ? locations
               .map((l) => {
                 const s = stats.get(l.id) ?? { kinds: 0, pcs: 0 };
-                return `<div class="card bin-card" data-id="${esc(l.id)}">
+                const holds = rulesSummary(l);
+                return `<a class="card bin-card bin-link" href="#/bin/${encodeURIComponent(l.id)}">
                   <div>
                     <div class="name">📦 ${esc(l.name)}</div>
-                    <div class="muted">${esc(l.description) || '&nbsp;'}</div>
-                    <div class="muted">${s.pcs} pcs · ${s.kinds} kinds</div>
+                    ${l.description ? `<div class="muted">${esc(l.description)}</div>` : ''}
+                    <div class="muted">${holds ? `Holds: ${esc(holds)}` : 'No sorting rules yet'}</div>
                   </div>
-                  <div class="row" style="flex:0 0 auto">
-                    <a class="btn" href="#/find?bin=${encodeURIComponent(l.id)}">Open</a>
-                    <a class="btn" href="#/add?bin=${encodeURIComponent(l.id)}">➕</a>
-                    <button data-act="rename" aria-label="Rename">✏️</button>
-                    <button data-act="delete" class="danger" aria-label="Delete">🗑️</button>
-                  </div>
-                </div>`;
+                  <div class="bin-count"><strong>${s.pcs}</strong><span class="muted">pcs</span></div>
+                </a>`;
               })
               .join('')
-          : '<div class="card empty">No bins yet. Add your first one above — a drawer, box, bag or shelf.</div>'
+          : '<div class="card empty">No bins yet. Add each container you use: a drawer, tub, bag or shelf.</div>'
       }
       ${
         unsorted
-          ? `<div class="card bin-card"><div><div class="name">Unsorted</div><div class="muted">${unsorted.pcs} pcs · ${unsorted.kinds} kinds</div></div>
-             <a class="btn" href="#/find?bin=unsorted">Open</a></div>`
+          ? `<a class="card bin-card bin-link" href="#/find?bin=unsorted">
+               <div><div class="name">Unsorted</div><div class="muted">Parts without a bin</div></div>
+               <div class="bin-count"><strong>${unsorted.pcs}</strong><span class="muted">pcs</span></div></a>`
           : ''
       }
       ${locations.length ? '<div class="actions"><button id="print">🖨️ Print bin labels</button></div>' : ''}
@@ -433,8 +494,8 @@ function renderBins() {
     <div class="labels">
       ${locations
         .map((l) => {
-          const cats = [...new Set(parts.filter((p) => p.locationId === l.id).map((p) => p.category))];
-          return `<div class="label"><h4>${esc(l.name)}</h4><p>${esc(cats.join(' · ') || l.description)}</p></div>`;
+          const fallback = [...new Set(parts.filter((p) => p.locationId === l.id).map((p) => p.category))].join(' · ');
+          return `<div class="label"><h4>${esc(l.name)}</h4><p>${esc(rulesSummary(l) || fallback || l.description)}</p></div>`;
         })
         .join('')}
     </div>
@@ -443,32 +504,157 @@ function renderBins() {
   view.querySelector('#bin-form').addEventListener('submit', (e) => {
     e.preventDefault();
     try {
-      store.addLocation(Object.fromEntries(new FormData(e.target)));
-      renderBins();
-      toast('Bin added');
+      const loc = store.addLocation(Object.fromEntries(new FormData(e.target)));
+      toast('Bin added. Now choose what goes in it.');
+      go(`#/bin/${loc.id}`);
     } catch (err) {
       toast(err.message);
     }
   });
 
-  view.querySelectorAll('.bin-card[data-id]').forEach((card) => {
-    const id = card.dataset.id;
-    card.querySelector('[data-act="rename"]').addEventListener('click', () => {
-      const loc = store.getLocation(id);
-      const name = prompt('Bin name', loc.name);
-      if (!name?.trim()) return;
-      const description = prompt('Where is it? (optional)', loc.description) ?? loc.description;
-      store.updateLocation(id, { name, description });
-      renderBins();
-    });
-    card.querySelector('[data-act="delete"]').addEventListener('click', () => {
-      if (!confirm('Delete this bin? Its parts will move to "Unsorted".')) return;
-      store.removeLocation(id);
-      renderBins();
-    });
+  view.querySelector('#print')?.addEventListener('click', () => window.print());
+}
+
+// One container: what belongs in it, what's in it, and a fast way to catalog it.
+function renderBin({ id }) {
+  const loc = store.getLocation(id);
+  if (!loc) {
+    view.innerHTML = '<div class="card empty">That bin no longer exists. <a href="#/bins">Back to bins</a></div>';
+    return;
+  }
+  const rules = binRules(loc);
+  const lastColor = store.state.settings.lastColorId ?? -1;
+
+  view.innerHTML = `
+    <p><a href="#/bins">← All bins</a></p>
+    <h2>📦 ${esc(loc.name)}</h2>
+    <p class="muted" id="bin-stats"></p>
+
+    <form id="catalog-form" class="card">
+      <h3 style="margin-top:0">Catalog what's in this container</h3>
+      <div class="grid2">
+        <div>
+          <label for="c-partNum">Part number</label>
+          <input id="c-partNum" name="partNum" placeholder="e.g. 3001" autocomplete="off" />
+        </div>
+        <div>
+          <label for="c-name">Name</label>
+          <input id="c-name" name="name" placeholder="e.g. Brick 2 x 4" autocomplete="off" />
+        </div>
+        <div>
+          <label for="c-color">Color</label>
+          <select id="c-color" name="colorId">${colorOptions(lastColor)}</select>
+        </div>
+        <div>
+          <label for="c-qty">Quantity</label>
+          <input id="c-qty" name="quantity" type="number" min="0" value="1" inputmode="numeric" />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" type="submit">Add to ${esc(loc.name)}</button>
+        <a class="btn" href="#/add?bin=${encodeURIComponent(loc.id)}">More details…</a>
+      </div>
+    </form>
+
+    <div class="card" style="padding:0">
+      <ul class="part-list" id="bin-parts"></ul>
+    </div>
+
+    <form id="rules-form" class="card">
+      <h3 style="margin-top:0">What goes in this bin?</h3>
+      <p class="muted">Used to suggest this bin when you add or identify a part. Leave a section empty to allow anything.</p>
+      <label for="b-name">Name</label>
+      <input id="b-name" name="name" value="${esc(loc.name)}" required />
+      <label for="b-desc">Where is it?</label>
+      <input id="b-desc" name="description" value="${esc(loc.description)}" placeholder="e.g. Garage shelf, 2nd drawer" />
+      <label>Kinds of parts</label>
+      <div class="chips wrap">
+        ${CATEGORIES.map(
+          (c) => `<label class="chip toggle"><input type="checkbox" name="categories" value="${esc(c)}"
+            ${rules.categories.includes(c) ? 'checked' : ''} />${esc(c)}</label>`,
+        ).join('')}
+      </div>
+      <label for="b-nums">Specific part numbers</label>
+      <input id="b-nums" name="partNums" value="${esc(loc.partNums.join(', '))}" placeholder="e.g. 3001, 3003, 2780" />
+      <label>Colors</label>
+      <div class="chips wrap">
+        ${COLORS.filter((c) => c.id !== -1)
+          .map(
+            (c) => `<label class="chip toggle"><input type="checkbox" name="colorIds" value="${c.id}"
+              ${rules.colorIds.includes(c.id) ? 'checked' : ''} /><span class="swatch" style="background:${c.hex}"></span>${esc(c.name)}</label>`,
+          )
+          .join('')}
+      </div>
+      <div class="actions">
+        <button class="primary" type="submit">Save bin</button>
+        <button type="button" class="danger" id="delete-bin">Delete bin</button>
+      </div>
+    </form>
+  `;
+
+  const list = view.querySelector('#bin-parts');
+  wirePartList(list);
+
+  function refreshContents() {
+    const contents = searchParts(store.state.parts, store.state.locations, '', { locationId: id });
+    const pcs = contents.reduce((n, p) => n + p.quantity, 0);
+    view.querySelector('#bin-stats').textContent =
+      `${loc.description ? `${loc.description} · ` : ''}${pcs} pcs · ${contents.length} kinds`;
+    list.innerHTML = contents.length
+      ? contents.map(partRow).join('')
+      : '<li class="empty">Nothing cataloged here yet. Add what\'s in this container above.</li>';
+  }
+  refreshContents();
+
+  const catalog = view.querySelector('#catalog-form');
+  catalog.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(catalog));
+    try {
+      const part = store.addPart({
+        ...data,
+        locationId: id,
+        // Fill in the kind of part from its name, or from the bin if it only holds one kind.
+        category: guessCategory(data.name) || (rules.categories.length === 1 ? rules.categories[0] : ''),
+      });
+      store.updateSettings({ lastColorId: part.colorId });
+      toast(`Added ${part.quantity} × ${part.name || part.partNum}`);
+      const fields = catalog.elements;
+      fields.partNum.value = '';
+      fields.name.value = '';
+      fields.quantity.value = '1';
+      fields.partNum.focus();
+      refreshContents();
+    } catch (err) {
+      toast(err.message);
+    }
   });
 
-  view.querySelector('#print')?.addEventListener('click', () => window.print());
+  const rulesForm = view.querySelector('#rules-form');
+  rulesForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(rulesForm);
+    try {
+      store.updateLocation(id, {
+        name: fd.get('name'),
+        description: fd.get('description'),
+        categories: fd.getAll('categories'),
+        partNums: fd.get('partNums'),
+        colorIds: fd.getAll('colorIds'),
+      });
+      toast('Bin saved');
+      renderBin({ id });
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  view.querySelector('#delete-bin').addEventListener('click', () => {
+    if (!confirm(`Delete "${loc.name}"? Its parts will move to "Unsorted".`)) return;
+    store.removeLocation(id);
+    toast('Bin deleted');
+    go('#/bins');
+  });
 }
 
 function download(filename, text) {
@@ -555,13 +741,14 @@ const routes = {
   add: renderPartForm,
   edit: renderPartForm,
   bins: renderBins,
+  bin: renderBin,
   settings: renderSettings,
 };
 
 function render() {
   const route = parseRoute();
   const fn = routes[route.name] ?? renderFind;
-  const tab = route.name === 'edit' ? 'find' : route.name;
+  const tab = { edit: 'find', bin: 'bins' }[route.name] ?? route.name;
   document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   fn(route);
   updateSummary();

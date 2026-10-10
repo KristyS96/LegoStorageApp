@@ -61,11 +61,21 @@ function normalizePart(input, existing = {}) {
   };
 }
 
+// Accepts an array or a separated string, e.g. "3001, 3003".
+function cleanList(value, separator = /,/) {
+  const list = Array.isArray(value) ? value : String(value ?? '').split(separator);
+  return [...new Set(list.map(clean).filter(Boolean))];
+}
+
 function normalizeLocation(input, existing = {}) {
   return {
     id: existing.id ?? input.id ?? newId('loc'),
     name: clean(input.name ?? existing.name),
     description: clean(input.description ?? existing.description),
+    // Sorting rules: what belongs in this bin.
+    categories: cleanList(input.categories ?? existing.categories),
+    partNums: cleanList(input.partNums ?? existing.partNums, /[\s,]+/),
+    colorIds: cleanList(input.colorIds ?? existing.colorIds).map(Number).filter(Number.isFinite),
   };
 }
 

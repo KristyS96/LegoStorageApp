@@ -240,3 +240,16 @@ button.small { padding: 4px 10px; min-width: 36px; }
 @media print { .labels { display: grid; } }
 .label h4 { margin: 0 0 4px; font-size: 1.3rem; }
 .label p { margin: 0; font-size: 0.8rem; }
+
+/* Bin pages & sorting rules */
+.chips.wrap { flex-wrap: wrap; overflow: visible; }
+.chip.toggle { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--text); }
+.chip.toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.chip.toggle:has(input:checked) { background: var(--yellow); border-color: var(--yellow); color: #1d1d1f; }
+.chip.toggle:has(input:focus-visible) { outline: 2px solid var(--red); }
+.bin-link { color: inherit; text-decoration: none; }
+.bin-link:hover { border-color: var(--yellow); }
+.bin-count { display: flex; flex-direction: column; align-items: center; flex: 0 0 auto; }
+.bin-count strong { font-size: 1.3rem; }
+.hint { margin-top: 10px; font-size: 0.9rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.hint:empty { display: none; }
