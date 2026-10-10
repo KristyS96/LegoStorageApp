@@ -3,36 +3,31 @@ import assert from 'node:assert/strict';
 import { searchParts, normalizeText } from '../js/search.js';
 import { SAMPLE } from '../js/data/sample.js';
 
-const { parts, locations } = SAMPLE;
-const nums = (results) => results.map((p) => `${p.partNum}/${p.colorId}`);
+const { parts } = SAMPLE;
+const nums = (results) => results.map((p) => p.partNum);
+const slotsFor = (part) => (part.partNum === '3023' ? [{ code: 'A-3-1', label: '' }] : []);
 
 test('normalizes size descriptions', () => {
-  assert.equal(normalizeText('Brick 2 X 4'), 'brick 2x4');
+  assert.equal(normalizeText('Plate 2 X 4'), 'plate 2x4');
   assert.equal(normalizeText('2 by 2'), '2x2');
+  assert.equal(normalizeText('Brick 1 x 1 x 3'), 'brick 1x1x3');
 });
 
-test('exact part number ranks first', () => {
-  const results = searchParts(parts, locations, '3001');
-  assert.ok(results.length >= 2);
-  assert.ok(results.every((p) => p.partNum === '3001'));
+test('exact part number and alternate numbers rank first', () => {
+  assert.equal(searchParts(parts, '3023')[0].partNum, '3023');
+  assert.deepEqual(nums(searchParts(parts, '3794')), ['15573']);
 });
 
-test('combines color and size words', () => {
-  assert.deepEqual(nums(searchParts(parts, locations, 'red 2x4')), ['3001/4']);
-  assert.deepEqual(nums(searchParts(parts, locations, 'red 2 x 4')), ['3001/4']);
+test('finds by type and size in any order', () => {
+  assert.deepEqual(nums(searchParts(parts, '1x2 plate')), ['3023', '15573']);
+  assert.deepEqual(nums(searchParts(parts, 'tile 2 x 2')), ['3068']);
 });
 
-test('matches bin names and notes', () => {
-  assert.ok(searchParts(parts, locations, 'technic tub').every((p) => p.locationId === 'sample_loc_tech'));
-  assert.deepEqual(nums(searchParts(parts, locations, 'couch')), ['4624/15']);
+test('finds by slot code', () => {
+  assert.deepEqual(nums(searchParts(parts, 'A-3-1', { slotsFor })), ['3023']);
 });
 
-test('all words must match', () => {
-  assert.deepEqual(searchParts(parts, locations, 'red banana'), []);
-});
-
-test('filters by category, color and bin', () => {
-  assert.ok(searchParts(parts, locations, '', { category: 'Plates' }).every((p) => p.category === 'Plates'));
-  assert.ok(searchParts(parts, locations, '', { colorId: '0' }).every((p) => p.colorId === 0));
-  assert.deepEqual(nums(searchParts(parts, locations, '', { locationId: 'unsorted' })), ['4624/15']);
+test('all words must match; category filter applies', () => {
+  assert.deepEqual(searchParts(parts, 'plate banana'), []);
+  assert.ok(searchParts(parts, '', { category: 'Tiles' }).every((p) => p.category === 'Tiles'));
 });

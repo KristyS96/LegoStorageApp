@@ -1,97 +1,170 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStore, memoryBackend, STORAGE_KEY } from '../js/store.js';
+import { createStore, memoryBackend, STORAGE_KEY, slotId } from '../js/store.js';
 
-test('adds bins and parts, and persists them', () => {
+function cabinet(store) {
+  return store.addUnit({ name: 'Plate cabinet', rows: '6, 6, 3' });
+}
+
+test('adds storage units with auto codes and persists them', () => {
   const backend = memoryBackend();
   const store = createStore(backend);
-  const bin = store.addLocation({ name: 'A1' });
-  store.addPart({ partNum: '3001', name: 'Brick 2 x 4', colorId: 4, quantity: 3, locationId: bin.id });
-
-  const reloaded = createStore(backend);
-  assert.equal(reloaded.state.locations[0].name, 'A1');
-  assert.equal(reloaded.state.parts[0].quantity, 3);
-  assert.ok(backend.getItem(STORAGE_KEY));
+  const a = cabinet(store);
+  const b = store.addUnit({ name: 'Specialty case', rows: [4, 4] });
+  assert.equal(a.code, 'A');
+  assert.equal(b.code, 'B');
+  assert.deepEqual(a.rows, [6, 6, 3]);
+  assert.equal(createStore(backend).state.units.length, 2);
 });
 
-test('adding the same part/color/bin increases quantity instead of duplicating', () => {
+test('rejects duplicate codes and empty layouts', () => {
   const store = createStore(memoryBackend());
-  store.addPart({ partNum: '3001', colorId: 4, quantity: 2 });
-  store.addPart({ partNum: '3001', colorId: 4, quantity: 5 });
-  store.addPart({ partNum: '3001', colorId: 1, quantity: 1 });
-  assert.equal(store.state.parts.length, 2);
-  assert.equal(store.findByPartNum('3001').find((p) => p.colorId === 4).quantity, 7);
+  cabinet(store);
+  assert.throws(() => store.addUnit({ name: 'X', code: 'a', rows: '2' }), /already used/);
+  assert.throws(() => store.addUnit({ name: 'X', rows: 'none' }), /each row/);
 });
 
-test('requires a part number or name', () => {
+test('slot codes resolve in several spellings and only inside the grid', () => {
   const store = createStore(memoryBackend());
-  assert.throws(() => store.addPart({ quantity: 1 }), /part number or a name/);
+  const unit = cabinet(store);
+  assert.equal(store.findSlotByCode('A-3-2').id, slotId(unit.id, 3, 2));
+  assert.equal(store.findSlotByCode('a 3 2').id, slotId(unit.id, 3, 2));
+  assert.equal(store.findSlotByCode('A3-2').id, slotId(unit.id, 3, 2));
+  assert.equal(store.findSlotByCode('A-3-4'), null, 'row 3 only has 3 drawers');
+  assert.equal(store.findSlotByCode('Z-1-1'), null);
+  assert.equal(store.codeOf(store.findSlotByCode('A-2-6')), 'A-2-6');
 });
 
-test('quantity never goes below zero', () => {
+test('adding part numbers to a slot fills names from the built-in catalog', () => {
   const store = createStore(memoryBackend());
-  const p = store.addPart({ name: 'Mystery', quantity: 1 });
-  store.adjustQuantity(p.id, -5);
-  assert.equal(store.state.parts[0].quantity, 0);
+  const unit = cabinet(store);
+  const id = slotId(unit.id, 1, 4);
+  const added = store.addPartsToSlot(id, '3623, 63864');
+  assert.deepEqual(added.map((p) => p.name), ['Plate 1 x 3', 'Tile 1 x 3']);
+  assert.deepEqual(store.getSlot(id).partNums, ['3623', '63864']);
+  assert.equal(store.getSlot(id).needsLabel, true, 'new contents need a label');
+  assert.deepEqual(store.addPartsToSlot(id, '3623'), [], 'no duplicates');
 });
 
-test('removing a bin keeps its parts as unsorted', () => {
+test('alternate part numbers find the same part and slot', () => {
   const store = createStore(memoryBackend());
-  const bin = store.addLocation({ name: 'B2' });
-  store.addPart({ partNum: '3003', locationId: bin.id });
-  store.removeLocation(bin.id);
-  assert.equal(store.state.locations.length, 0);
-  assert.equal(store.state.parts[0].locationId, null);
+  const unit = cabinet(store);
+  store.addPartsToSlot(slotId(unit.id, 1, 3), '3794');
+  assert.equal(store.getPart('15573').partNum, '15573');
+  assert.equal(store.getPart('3794').name, 'Plate 1 x 2 Jumper');
+  assert.equal(store.slotsForPart('3794').length, 1);
+  assert.equal(store.slotsForPart('15573').length, 1);
 });
 
-test('export omits the API key and import round-trips the collection', () => {
+test('unknown part numbers are kept with a blank name', () => {
+  const store = createStore(memoryBackend());
+  const unit = cabinet(store);
+  const [part] = store.addPartsToSlot(slotId(unit.id, 1, 1), '99999');
+  assert.equal(part.partNum, '99999');
+  assert.equal(part.name, '');
+});
+
+test('a part can live in several slots, and moves between them', () => {
+  const store = createStore(memoryBackend());
+  const unit = cabinet(store);
+  const s1 = slotId(unit.id, 1, 1);
+  const s2 = slotId(unit.id, 3, 1);
+  store.addPartsToSlot(s1, '3023');
+  store.addPartsToSlot(s2, '3023');
+  assert.equal(store.slotsForPart('3023').length, 2);
+  store.movePart('3023', s1, slotId(unit.id, 2, 2));
+  assert.deepEqual(store.slotsForPart('3023').map((s) => store.codeOf(s)).sort(), ['A-2-2', 'A-3-1']);
+});
+
+test('parts without a slot are listed', () => {
+  const store = createStore(memoryBackend());
+  const unit = cabinet(store);
+  store.ensurePart('3001');
+  store.addPartsToSlot(slotId(unit.id, 1, 1), '3068');
+  assert.deepEqual(store.partsWithoutSlot().map((p) => p.partNum), ['3001']);
+});
+
+test('shrinking a unit refuses to drop slots that hold parts', () => {
+  const store = createStore(memoryBackend());
+  const unit = cabinet(store);
+  store.addPartsToSlot(slotId(unit.id, 3, 3), '3666');
+  assert.throws(() => store.updateUnit(unit.id, { rows: '6, 6, 2' }), /A-3-3/);
+  store.removePartFromSlot(slotId(unit.id, 3, 3), '3666');
+  store.updateUnit(unit.id, { rows: '6, 6, 2' });
+  assert.deepEqual(store.getUnit(unit.id).rows, [6, 6, 2]);
+});
+
+test('deleting a part removes it from every slot', () => {
+  const store = createStore(memoryBackend());
+  const unit = cabinet(store);
+  store.addPartsToSlot(slotId(unit.id, 1, 1), '3068, 3069');
+  store.removePart('3068');
+  assert.deepEqual(store.getSlot(slotId(unit.id, 1, 1)).partNums, ['3069']);
+});
+
+test('export omits the API key and import round-trips', () => {
   const a = createStore(memoryBackend());
   a.updateSettings({ rebrickableKey: 'secret' });
-  a.addLocation({ name: 'A1' });
-  a.addPart({ partNum: '3001', quantity: 4 });
+  const unit = cabinet(a);
+  a.addPartsToSlot(slotId(unit.id, 1, 1), '3068');
   const json = a.exportJSON();
   assert.ok(!json.includes('secret'));
 
   const b = createStore(memoryBackend());
   b.updateSettings({ rebrickableKey: 'mine' });
   b.importJSON(json);
-  assert.equal(b.state.parts[0].partNum, '3001');
+  assert.equal(b.codeOf(b.slotsForPart('3068')[0]), 'A-1-1');
   assert.equal(b.state.settings.rebrickableKey, 'mine', 'replace import keeps local key');
 });
 
-test('merge import keeps local parts and takes newer remote edits', () => {
+test('merge import keeps both sides and takes newer slot edits', () => {
   const a = createStore(memoryBackend());
-  const shared = a.addPart({ partNum: '3001', quantity: 1 });
+  const unit = cabinet(a);
+  const id = slotId(unit.id, 1, 1);
+  a.addPartsToSlot(id, '3068');
   const b = createStore(memoryBackend());
   b.importJSON(a.exportJSON());
 
-  b.addPart({ partNum: '3024', quantity: 10 });
-  a.updatePart(shared.id, { quantity: 9 });
-  // Ensure a's edit is strictly newer.
-  a.state.parts[0].updatedAt = Date.now() + 1000;
+  b.addPartsToSlot(slotId(unit.id, 1, 2), '6636');
+  a.updateSlot(id, { label: 'Tiles 2x2' });
+  a.state.slots.find((s) => s.id === id).updatedAt = Date.now() + 1000;
 
   b.importJSON(a.exportJSON(), { merge: true });
-  assert.equal(b.state.parts.length, 2);
-  assert.equal(b.state.parts.find((p) => p.id === shared.id).quantity, 9);
+  assert.equal(b.getSlot(id).label, 'Tiles 2x2');
+  assert.deepEqual(b.getSlot(slotId(unit.id, 1, 2)).partNums, ['6636']);
 });
 
-test('rejects files that are not exports', () => {
+test('migrates version 1 data (flat bins with color rows)', () => {
+  const v1 = {
+    version: 1,
+    locations: [{ id: 'l1', name: 'A1' }, { id: 'l2', name: 'Red tub' }],
+    parts: [
+      { partNum: '3001', name: 'Brick 2 x 4', colorId: 4, quantity: 3, locationId: 'l1' },
+      { partNum: '3001', name: 'Brick 2 x 4', colorId: 15, quantity: 2, locationId: 'l1' },
+      { partNum: '3003', name: 'Brick 2 x 2', colorId: 4, quantity: 1, locationId: 'l2' },
+      { partNum: '', name: 'Mystery clip', quantity: 1, locationId: null },
+    ],
+  };
+  const store = createStore(memoryBackend({ [STORAGE_KEY]: JSON.stringify(v1) }));
+  assert.equal(store.state.units[0].name, 'Imported bins');
+  assert.deepEqual(store.state.units[0].rows, [1, 1]);
+  assert.equal(store.state.parts.length, 3);
+  assert.equal(store.codeOf(store.slotsForPart('3001')[0]), 'Z-1-1');
+  assert.equal(store.slotsForPart('3001')[0].label, 'A1');
+  assert.deepEqual(store.partsWithoutSlot().map((p) => p.name), ['Mystery clip']);
+});
+
+test('rejects files that are not exports and recovers from corrupted storage', () => {
   const store = createStore(memoryBackend());
   assert.throws(() => store.importJSON('{"hello":1}'), /missing/);
+  assert.deepEqual(createStore(memoryBackend({ [STORAGE_KEY]: '{not json' })).state.parts, []);
 });
 
-test('recovers from corrupted storage', () => {
-  const store = createStore(memoryBackend({ [STORAGE_KEY]: '{not json' }));
-  assert.deepEqual(store.state.parts, []);
-});
-
-test('bins keep their sorting rules, and old bins load without them', () => {
-  const store = createStore(memoryBackend());
-  const bin = store.addLocation({ name: 'A1', categories: ['Bricks', 'Round & Cones'], partNums: '3001, 3003 3004', colorIds: ['4'] });
-  assert.deepEqual(bin.categories, ['Bricks', 'Round & Cones']);
-  assert.deepEqual(bin.partNums, ['3001', '3003', '3004']);
-  assert.deepEqual(bin.colorIds, [4]);
-
-  const legacy = createStore(memoryBackend({ [STORAGE_KEY]: JSON.stringify({ parts: [], locations: [{ id: 'l', name: 'Old' }] }) }));
-  assert.deepEqual(legacy.state.locations[0].categories, []);
+test('merging another unit with the same code gives it a free code', () => {
+  const a = createStore(memoryBackend());
+  cabinet(a);
+  const b = createStore(memoryBackend());
+  b.addUnit({ name: 'Brick case', rows: '2, 2' });
+  b.importJSON(a.exportJSON(), { merge: true });
+  assert.deepEqual(b.state.units.map((u) => u.code), ['A', 'B']);
 });

@@ -6,7 +6,7 @@ export const CATEGORIES = [
   'Slopes',
   'Wedges',
   'Round & Cones',
-  'Brackets & Hinges',
+  'Brackets, Hinges & Clips',
   'Technic',
   'Wheels & Vehicles',
   'Windows & Doors',
