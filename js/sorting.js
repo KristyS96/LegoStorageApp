@@ -64,13 +64,54 @@ export function similarity(a, b) {
   return score;
 }
 
+// ---------- Versions of the same part ----------
+//
+// LEGO often makes small changes to a part and BrickLink gives each version a letter:
+// Cone 2 x 2 x 2 is 3942a, 3942b and 3942c, which look identical in a photo. Printed
+// versions add more (3068bpr0001). Versions of a part belong in the same compartment.
+
+/** "3942c" -> "3942", "3068bpr0001" -> "3068", "3001" -> "3001". */
+export function baseNumber(num) {
+  const n = String(num ?? '').trim().toLowerCase();
+  return n.match(/^(\d{3,})(?=[a-z]|$)/)?.[1] ?? n;
+}
+
+// "Cone 2 x 2 x 2 - Open Stud" / "Cone 2 x 2 x 2 [Open Stud]" -> "cone 2 x 2 x 2";
+// only names with a size count, so "Minifig, Head" doesn't match every head.
+function nameStem(name) {
+  const stem = String(name ?? '').toLowerCase().split(/\s+-\s+|\[|\(/)[0].replace(/\s+/g, ' ').trim();
+  return /\d\s*[x×]\s*\d/.test(stem) ? stem : '';
+}
+
+/** Are these two different versions of the same part? */
+export function isVariant(a, b) {
+  const numsA = [a.partNum, ...(a.altNums ?? [])].map((n) => String(n).toLowerCase());
+  const numsB = [b.partNum, ...(b.altNums ?? [])].map((n) => String(n).toLowerCase());
+  if (numsA.some((n) => numsB.includes(n))) return false; // the same part
+  const bases = new Set(numsA.map(baseNumber));
+  if (numsB.some((n) => bases.has(baseNumber(n)))) return true;
+  const stem = nameStem(a.name);
+  return Boolean(stem) && stem === nameStem(b.name);
+}
+
+/** Compartments a drawer's parts fill: versions of one part share a compartment. */
+export function compartmentsUsed(parts) {
+  const groups = [];
+  for (const p of parts) {
+    const group = groups.find((g) => g.some((q) => isVariant(p, q)));
+    if (group) group.push(p);
+    else groups.push([p]);
+  }
+  return groups.length;
+}
+
 const LIKE = 6; // similarity at which parts count as "like pieces" (e.g. any two plain tiles)
 
 /**
  * Suggest slots for a part that needs a home.
  * @param part { partNum, name, category }
  * @param catalog { units, slots, parts } from the store
- * @returns [{ slotId, code, kind: 'share' | 'beside' | 'empty', reason, score }] best first
+ * @returns [{ slotId, code, kind: 'version' | 'share' | 'beside' | 'empty', reason, score, versionOf? }] best first
  */
 export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) {
   const byNum = new Map(parts.map((p) => [p.partNum.toLowerCase(), p]));
@@ -89,6 +130,23 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
 
   const out = [];
   let fallback = null;
+  // Another version of this part already has a home: it goes with it, compartment and all.
+  const withVersion = new Set();
+  for (const unit of units) {
+    unit.rows.forEach((cols, r) => {
+      for (let c = 0; c < cols; c += 1) {
+        const id = `${unit.id}:${r + 1}:${c + 1}`;
+        if ((stored.get(id)?.partNums ?? []).some((n) => n.toLowerCase() === self)) continue;
+        const version = contentsOf(id).find((p) => isVariant(part, p));
+        if (!version) continue;
+        withVersion.add(id);
+        out.push({
+          slotId: id, code: `${unit.code}-${r + 1}-${c + 1}`, kind: 'version', score: 100, versionOf: version.partNum,
+          reason: `with ${label(version)}${version.name ? ` (#${version.partNum})` : ''}, another version of this part`,
+        });
+      }
+    });
+  }
   for (const unit of units) {
     unit.rows.forEach((cols, r) => {
       for (let c = 0; c < cols; c += 1) {
@@ -97,9 +155,10 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
         const slot = stored.get(id);
         const contents = contentsOf(id);
         if ((slot?.partNums ?? []).some((n) => n.toLowerCase() === self)) continue; // already there
+        if (withVersion.has(id)) continue;
         if (!contents.length && slot?.label) continue; // named compartment ("Hinges"): contents not listed
         if (contents.length) {
-          const free = (slot?.compartments ?? 1) - contents.length;
+          const free = (slot?.compartments ?? 1) - compartmentsUsed(contents);
           const match = best(contents);
           if (free > 0 && match.score >= LIKE) {
             out.push({

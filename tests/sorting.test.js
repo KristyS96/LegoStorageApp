@@ -77,3 +77,39 @@ test('with nothing alike, offers the first empty drawer; never a named compartme
   assert.ok(picks.every((p) => p.code !== 'A-1-1'));
   assert.deepEqual(picks.map((p) => p.kind), ['empty']);
 });
+
+test('versions of a part share a family number or name', async () => {
+  const { baseNumber, isVariant } = await import('../js/sorting.js');
+  assert.equal(baseNumber('3942c'), '3942');
+  assert.equal(baseNumber('3068bpr0001'), '3068');
+  assert.equal(baseNumber('3001'), '3001');
+  assert.equal(baseNumber('32000'), '32000');
+  assert.ok(isVariant({ partNum: '3942a' }, { partNum: '3942c' }));
+  assert.ok(isVariant({ partNum: '4589' }, { partNum: '4589b' }));
+  assert.ok(!isVariant({ partNum: '3200' }, { partNum: '32000' }), 'different numbers, not a version');
+  assert.ok(!isVariant({ partNum: '3942c' }, { partNum: '3942c' }), 'the same part');
+  assert.ok(!isVariant({ partNum: '15573', altNums: ['3794'] }, { partNum: '3794' }), 'an alternate number is the same part');
+  assert.ok(isVariant({ partNum: '1', name: 'Cone 2 x 2 x 2 - Open Stud' }, { partNum: '2', name: 'Cone 2 x 2 x 2 [Completely Open Stud]' }));
+  assert.ok(!isVariant({ partNum: '1', name: 'Plate 1 x 2 with Clip' }, { partNum: '2', name: 'Plate 1 x 2 with Handle' }));
+  assert.ok(!isVariant({ partNum: '1', name: 'Minifig, Head' }, { partNum: '2', name: 'Minifig, Head' }), 'needs a size to match by name');
+});
+
+test('a new version of a stored part is suggested its drawer first, sharing its compartment', async () => {
+  const { compartmentsUsed } = await import('../js/sorting.js');
+  const store = createStore(memoryBackend());
+  const unit = store.addUnit({ name: 'Round', rows: '3, 3' });
+  store.addPartsToSlot(slotId(unit.id, 1, 1), '3942b');
+  store.savePart('3942b', { name: 'Cone 2 x 2 x 2 - Open Stud' });
+  store.addPartsToSlot(slotId(unit.id, 2, 3), '3062b, 4073'); // round 1x1 brick and plate, two compartments of two
+  store.updateSlot(slotId(unit.id, 1, 1), { compartments: 2 });
+  store.addPartsToSlot(slotId(unit.id, 1, 1), '98138'); // a round tile fills the other compartment
+  const [first] = suggestSlots({ partNum: '3942c', name: 'Cone 2 x 2 x 2 - Completely Open Stud', category: 'Round & Cones' }, store.state);
+  assert.equal(first.code, 'A-1-1');
+  assert.equal(first.kind, 'version');
+  assert.equal(first.versionOf, '3942b');
+  assert.match(first.reason, /another version/);
+  // with 3942c added, the drawer still uses 2 compartments
+  store.addPartsToSlot(slotId(unit.id, 1, 1), '3942c');
+  const parts = store.getSlot(slotId(unit.id, 1, 1)).partNums.map((n) => store.getPart(n));
+  assert.equal(compartmentsUsed(parts), 2);
+});
