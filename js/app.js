@@ -4,6 +4,7 @@ import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
 import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { brickArchitectLabelUrl, labelNumber } from './labels.js';
+import { fetchSet, normalizeSetNum, planBuild } from './sets.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
@@ -984,6 +985,156 @@ function renderSlot({ id }) {
   );
 }
 
+// ---------- Build a set ----------
+
+const RECENT_SETS_KEY = 'brick-finder:recent-sets';
+const setCache = new Map(); // set number -> fetched set, for this visit
+
+function readLocal(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeLocal(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Private mode or storage full: ticks and recent sets just aren't remembered.
+  }
+}
+
+function renderBuild({ params }) {
+  const setParam = params.get('set') ?? '';
+  const recent = readLocal(RECENT_SETS_KEY, []);
+  view.innerHTML = `
+    <h2>Build a set</h2>
+    <form id="set-form" class="card">
+      <label for="set-num" style="margin-top:0">Set number</label>
+      <div class="row">
+        <input id="set-num" value="${esc(setParam)}" placeholder="e.g. 60337" inputmode="text" autocomplete="off" />
+        <button class="primary" style="flex:0 0 auto">Find parts</button>
+      </div>
+      ${
+        recent.length
+          ? `<div class="chips wrap">${recent
+              .map((r) => `<a class="chip" href="#/build?set=${encodeURIComponent(r.setNum)}">${esc(r.setNum)} · ${esc(r.name)}</a>`)
+              .join('')}</div>`
+          : ''
+      }
+      ${store.state.settings.rebrickableKey ? '' : '<p class="notice">Set parts lists come from Rebrickable. Add your Rebrickable API key in <a href="#/settings">Settings</a>.</p>'}
+    </form>
+    <div id="build-out"></div>
+  `;
+  view.querySelector('#set-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const num = normalizeSetNum(view.querySelector('#set-num').value);
+    if (num) go(`#/build?set=${encodeURIComponent(num)}`);
+  });
+  if (setParam) loadBuild(normalizeSetNum(setParam));
+}
+
+async function loadBuild(setNum) {
+  const out = view.querySelector('#build-out');
+  out.innerHTML = '<div class="card empty">🔎 Getting the parts list…</div>';
+  let set = setCache.get(setNum);
+  try {
+    set ??= await fetchSet(setNum, store.state.settings.rebrickableKey);
+  } catch (err) {
+    out.innerHTML = `<div class="card empty">⚠️ ${esc(err.message)}</div>`;
+    return;
+  }
+  if (parseRoute().name !== 'build') return; // moved on while loading
+  if (!set) {
+    out.innerHTML = `<div class="card empty">Rebrickable doesn't know set ${esc(setNum)}. Check the number on the box (e.g. 60337 or 60337-1).</div>`;
+    return;
+  }
+  setCache.set(setNum, set);
+  writeLocal(
+    RECENT_SETS_KEY,
+    [{ setNum: set.setNum, name: set.name }, ...readLocal(RECENT_SETS_KEY, []).filter((r) => r.setNum !== set.setNum)].slice(0, 6),
+  );
+  drawBuild(set);
+}
+
+function drawBuild(set) {
+  const out = view.querySelector('#build-out');
+  const plan = planBuild(set, store);
+  const ticksKey = `brick-finder:build:${set.setNum}`;
+  const ticks = new Set(readLocal(ticksKey, []));
+  const kinds = set.lines.length;
+  const foundKinds = kinds - plan.missing.length;
+
+  const lineHtml = (l) => `<li class="part build-line ${ticks.has(l.key) ? 'done' : ''}">
+      <label class="part-link">
+        ${thumb(l.imageUrl)}
+        <div>
+          <div class="part-title">${l.quantity}× ${esc(l.name)}</div>
+          <div class="part-meta">
+            <span>#${esc(l.partNum)}</span>
+            <span>${l.colorRgb ? `<span class="swatch" style="background:${esc(l.colorRgb)}"></span>` : ''}${esc(l.color)}</span>
+            ${l.alsoIn?.length ? `<span>also in ${esc(l.alsoIn.join(', '))}</span>` : ''}
+          </div>
+        </div>
+      </label>
+      <input type="checkbox" class="tick" data-key="${esc(l.key)}" ${ticks.has(l.key) ? 'checked' : ''} aria-label="Got it" />
+    </li>`;
+
+  out.innerHTML = `
+    <div class="card set-head">
+      ${set.imageUrl ? `<img src="${esc(set.imageUrl)}" alt="" />` : ''}
+      <div>
+        <h3 style="margin:0">${esc(set.name)}</h3>
+        <div class="muted">${esc(set.setNum)}${set.year ? ` · ${set.year}` : ''} · ${plan.totalPieces} pieces, ${kinds} kinds</div>
+        <p style="margin:6px 0 0"><strong>${foundKinds} of ${kinds}</strong> kinds are in your storage
+          (${plan.foundPieces} pieces), in <strong>${plan.stops.length}</strong> drawer${plan.stops.length === 1 ? '' : 's'}.</p>
+        <p class="muted" id="tick-count"></p>
+      </div>
+    </div>
+    ${hitMaps(plan.stops.map((s) => s.slot))}
+    ${plan.stops
+      .map(
+        (stop) => `<div class="card" style="padding:0">
+          <h3 class="stop-head"><a class="slot-badge" href="${slotHref(stop.slot.id)}">📦 ${esc(stop.code)}</a>
+            <span class="muted">${esc(store.getUnit(stop.slot.unitId)?.name ?? '')}</span></h3>
+          <ul class="part-list">${stop.lines.map(lineHtml).join('')}</ul>
+        </div>`,
+      )
+      .join('')}
+    ${
+      plan.missing.length
+        ? `<div class="card" style="padding:0">
+            <h3 class="stop-head">Not in your storage (${plan.missing.length})</h3>
+            <ul class="part-list">${plan.missing.map(lineHtml).join('')}</ul>
+          </div>`
+        : ''
+    }
+    <div class="actions"><button id="untick">Clear ticks</button></div>
+  `;
+
+  const allKeys = set.lines.map((l) => l.key);
+  const updateCount = () => {
+    const n = allKeys.filter((k) => ticks.has(k)).length;
+    out.querySelector('#tick-count').textContent = n ? `✓ ${n} of ${kinds} collected` : 'Tick parts off as you collect them.';
+  };
+  updateCount();
+  out.addEventListener('change', (e) => {
+    const box = e.target.closest('.tick');
+    if (!box) return;
+    if (box.checked) ticks.add(box.dataset.key);
+    else ticks.delete(box.dataset.key);
+    box.closest('.build-line').classList.toggle('done', box.checked);
+    writeLocal(ticksKey, [...ticks]);
+    updateCount();
+  });
+  out.querySelector('#untick').addEventListener('click', () => {
+    writeLocal(ticksKey, []);
+    drawBuild(set);
+  });
+}
+
 // ---------- Labels ----------
 
 function labelHtml(slot, style) {
@@ -1411,6 +1562,7 @@ const routes = {
   unit: renderUnit,
   slot: renderSlot,
   labels: renderLabels,
+  build: renderBuild,
   settings: renderSettings,
 };
 const TAB_FOR = { part: 'find', unit: 'storage', slot: 'storage', scan: 'storage' };

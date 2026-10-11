@@ -334,3 +334,14 @@ button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; 
 .ba-link { white-space: nowrap; }
 .ba-list .part-link { grid-template-columns: auto 1fr; }
 .suggestion .thumb { width: 44px; height: 44px; flex: 0 0 auto; }
+
+/* Build a set */
+.set-head { display: flex; gap: 12px; align-items: flex-start; }
+.set-head img { width: 96px; height: 72px; object-fit: contain; background: #fff; border-radius: 8px; flex: 0 0 auto; }
+.stop-head { margin: 0; padding: 12px 12px 4px; display: flex; gap: 8px; align-items: center; }
+.build-line .tick { width: 26px; height: 26px; flex: 0 0 auto; }
+.build-line label.part-link { margin: 0; color: inherit; font-size: 1rem; }
+.build-line.done { opacity: 0.45; }
+.build-line.done .part-title { text-decoration: line-through; }
+.tabs a { font-size: 0.7rem; }
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, 0.3); vertical-align: -1px; margin-right: 4px; }
