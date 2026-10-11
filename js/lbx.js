@@ -24,6 +24,7 @@ const MIN_NAME_SIZE = 7;
 const MAX_NAME_WIDTH = 200; // about 7 cm
 const GAP = 17; // about 6 mm between parts, with the cut mark in the middle
 const CUT_SIZE = 20;
+const END_PAD = 4;
 // The PT-P300BT prints labels up to 300 mm long; keep each strip under 280 mm.
 export const MAX_STRIP_PT = (280 / 25.4) * 72;
 export const MAX_PER_STRIP = 10;
@@ -101,7 +102,8 @@ export function labelXml(layouts) {
     );
     x += l.width;
   });
-  const length = Math.max(x - LEFT, 34.4);
+  // A little room at the end: the Brother app's font runs slightly wider than measured.
+  const length = Math.max(x - LEFT + END_PAD, 34.4);
   return (
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
     `<pt:document ${NS} version="1.9" generator="com.brother.PtouchEditor"><pt:body currentSheet="Sheet 1" direction="LTR"><style:sheet name="Sheet 1">` +

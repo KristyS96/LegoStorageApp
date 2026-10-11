@@ -1201,7 +1201,7 @@ function downloadFile(file) {
 const measureCtx = document.createElement('canvas').getContext('2d');
 function measureText(text, size, bold) {
   measureCtx.font = `${bold ? 700 : 400} ${size}px Helvetica, Arial, sans-serif`;
-  return measureCtx.measureText(text).width * 1.05;
+  return measureCtx.measureText(text).width * 1.1;
 }
 
 // App-made labels as .lbx files: one strip per file (up to 10 parts, under 28 cm),
