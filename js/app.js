@@ -7,6 +7,7 @@ import { brickArchitectLabelUrl, checkBrickArchitect, fetchLabelFile, labelNumbe
 import { drawStrip } from './label-image.js';
 import { appPiece, lbxPiece, lbxStrips, makeStrips } from './lbx.js';
 import { fetchSet, normalizeSetNum, planBuild } from './sets.js';
+import { storageReport } from './report.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
@@ -516,6 +517,7 @@ function renderStorage() {
   view.innerHTML = `
     <h2>Storage</h2>
     <a class="btn primary-outline wide" href="#/scan">📷 Add a storage unit from a photo</a>
+    ${units.length ? '<a class="btn wide" href="#/check">🔎 Check storage: versions apart, parts in two places</a>' : ''}
     ${units
       .map(
         (u) => `<div class="card">
@@ -1510,6 +1512,97 @@ function renderLabels({ params }) {
   }
 }
 
+// ---------- Check storage ----------
+
+const REPORT_OK_KEY = 'brick-finder:report-ok'; // findings marked "that's on purpose" on this phone
+
+function renderCheck() {
+  const ok = new Set(readLocal(REPORT_OK_KEY, []));
+  const report = storageReport(store);
+  const open = (list) => list.filter((x) => !ok.has(x.key));
+  const versions = open(report.versions);
+  const spread = open(report.spread);
+  const twins = report.twins;
+  const hidden = report.versions.length + report.spread.length - versions.length - spread.length;
+  const partLink = (p) => `<a href="${partHref(p.partNum)}">#${esc(p.partNum)}</a>${p.name ? ` ${esc(p.name)}` : ''}`;
+  const gatherButtons = (key, slots) =>
+    slots
+      .map((s) => `<button type="button" class="small" data-gather="${esc(key)}" data-to="${esc(s.id)}">All in ${esc(store.codeOf(s))}</button>`)
+      .join('');
+  const section = (title, intro, items) =>
+    items.length ? `<div class="card"><h3 style="margin-top:0">${title} (${items.length})</h3><p class="muted">${intro}</p>${items.join('')}</div>` : '';
+
+  view.innerHTML = `
+    <h2>Check storage</h2>
+    ${
+      versions.length + spread.length + twins.length
+        ? ''
+        : '<div class="card empty">✓ Nothing to tidy: no versions apart, no part in two places, no part listed twice.</div>'
+    }
+    ${section(
+      'Versions of one part in different drawers',
+      'These look the same (e.g. 3942a and 3942c), so they\'re easier to find together.',
+      versions.map(
+        (v) => `<div class="finding">
+          <ul class="finding-list">${v.members
+            .map((m) => `<li>${partLink(m.part)} <span class="muted">in</span> ${m.slots.map(slotBadge).join(' ')}</li>`)
+            .join('')}</ul>
+          <div class="actions">${gatherButtons(v.key, v.slots)}<button type="button" class="small" data-ok="${esc(v.key)}">Keep apart</button></div>
+        </div>`,
+      ),
+    )}
+    ${section(
+      'The same part in more than one drawer',
+      'Fine if one is an overflow drawer: tap "That\'s on purpose" and it won\'t be listed again.',
+      spread.map(
+        (x) => `<div class="finding">
+          <div>${partLink(x.part)} <span class="muted">in</span> ${x.slots.map(slotBadge).join(' ')}</div>
+          <div class="actions">${gatherButtons(x.key, x.slots)}<button type="button" class="small" data-ok="${esc(x.key)}">That's on purpose</button></div>
+        </div>`,
+      ),
+    )}
+    ${section(
+      'One part listed twice',
+      'These share a part number. Merging keeps the first, with the other\'s numbers as alternates; drawers keep their parts.',
+      twins.map(
+        (t) => `<div class="finding">
+          <div>${partLink(t.parts[0])} <span class="muted">and</span> ${partLink(t.parts[1])} <span class="muted">share #${esc(t.shared.join(', #'))}</span></div>
+          <div class="actions"><button type="button" class="small" data-merge="${esc(t.parts[0].partNum)}" data-drop="${esc(t.parts[1].partNum)}">Merge into #${esc(t.parts[0].partNum)}</button></div>
+        </div>`,
+      ),
+    )}
+    ${hidden ? `<p class="muted">${hidden} marked as on purpose. <button type="button" class="small" id="unhide">Show them again</button></p>` : ''}
+  `;
+
+  const findings = new Map([...report.versions, ...report.spread].map((x) => [x.key, x]));
+  view.querySelectorAll('[data-gather]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const finding = findings.get(btn.dataset.gather);
+      const nums = finding.members ? finding.members.map((m) => m.part.partNum) : [finding.part.partNum];
+      store.gatherParts(nums, btn.dataset.to);
+      toast(`Now all in ${store.codeOf(store.getSlot(btn.dataset.to))}: move the pieces there too`);
+      renderCheck();
+    }),
+  );
+  view.querySelectorAll('[data-ok]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      writeLocal(REPORT_OK_KEY, [...ok, btn.dataset.ok]);
+      renderCheck();
+    }),
+  );
+  view.querySelectorAll('[data-merge]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      store.mergeParts(btn.dataset.merge, btn.dataset.drop);
+      toast('Merged');
+      renderCheck();
+    }),
+  );
+  view.querySelector('#unhide')?.addEventListener('click', () => {
+    writeLocal(REPORT_OK_KEY, []);
+    renderCheck();
+  });
+}
+
 // ---------- Family sharing ----------
 
 const sharing = {
@@ -1823,9 +1916,10 @@ const routes = {
   slot: renderSlot,
   labels: renderLabels,
   build: renderBuild,
+  check: renderCheck,
   settings: renderSettings,
 };
-const TAB_FOR = { part: 'find', unit: 'storage', slot: 'storage', scan: 'storage' };
+const TAB_FOR = { part: 'find', unit: 'storage', slot: 'storage', scan: 'storage', check: 'storage' };
 
 function render() {
   const route = parseRoute();

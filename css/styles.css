@@ -354,3 +354,10 @@ button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; 
 .ba-row .part-slots { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .ba-row .tick { width: 26px; height: 26px; flex: 0 0 auto; }
 .ba-row.done { opacity: 0.45; }
+
+/* Check storage */
+.finding { padding: 10px 0; border-top: 1px solid var(--border); }
+.finding:first-of-type { border-top: none; }
+.finding-list { margin: 0; padding-left: 18px; }
+.finding-list li { margin: 4px 0; }
+.finding .actions { margin-top: 8px; flex-wrap: wrap; }
