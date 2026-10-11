@@ -1944,5 +1944,6 @@ view.addEventListener('focusout', () => {
 window.addEventListener('online', updateSyncBadge);
 window.addEventListener('offline', updateSyncBadge);
 render();
+view.dataset.started = '1'; // index.html stops watching for a failed start
 // Phones already sharing reconnect at startup; others load Firebase only if they open sharing.
 if (sharingLinked()) connectSharing();

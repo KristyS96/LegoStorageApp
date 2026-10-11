@@ -26,6 +26,42 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+    <script>
+      // If the app doesn't start, say why instead of showing a blank page. Usually it was
+      // just updated and the browser mixed old and new files: reloading fixes that.
+      (function () {
+        var timer;
+        function show(message) {
+          var view = document.getElementById('view');
+          if (!view || view.dataset.started) return;
+          clearTimeout(timer);
+          view.innerHTML =
+            '<div class="card"><h2 style="margin-top:0">The app didn\'t start</h2>' +
+            '<p>It was probably just updated. Reload to get the new version.</p>' +
+            '<div class="actions"><button class="primary" type="button" id="boot-reload">Reload</button></div>' +
+            '<p class="muted" id="boot-error" style="font-size:0.8rem;word-break:break-word"></p></div>';
+          document.getElementById('boot-error').textContent = message;
+          document.getElementById('boot-reload').onclick = function () {
+            location.reload();
+          };
+        }
+        // Capture phase: a script that fails to load fires "error" on the element, which doesn't bubble.
+        window.addEventListener(
+          'error',
+          function (e) {
+            var src = e.target && (e.target.src || e.target.href);
+            show(e.message || (src ? "Couldn't load " + src : 'Unknown error'));
+          },
+          true,
+        );
+        window.addEventListener('unhandledrejection', function (e) {
+          show(String((e.reason && e.reason.message) || e.reason));
+        });
+        timer = setTimeout(function () {
+          show('It took too long to start.');
+        }, 10000);
+      })();
+    </script>
     <script type="module" src="js/app.js"></script>
   </body>
 </html>
