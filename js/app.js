@@ -1,7 +1,7 @@
 import { createStore, normNum, parseNums, parseRows, slotId, slotCode, MAX_COMPARTMENTS } from './store.js';
 import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
-import { guessCategory, suggestSlots } from './sorting.js';
+import { compartmentsUsed, guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { brickArchitectLabelUrl, checkBrickArchitect, fetchLabelFile, labelNumber, strips } from './labels.js';
 import { drawStrip } from './label-image.js';
@@ -66,6 +66,11 @@ function baLabelLink(part, text = '🏷️ Label') {
     : '';
 }
 
+// Compartments a drawer's parts fill (versions of one part, like 3942a and 3942c, share one).
+function slotFill(slot) {
+  return compartmentsUsed(slot.partNums.map((n) => store.getPart(n) ?? { partNum: n, name: '' }));
+}
+
 function numsText(part) {
   return [part.partNum, ...part.altNums].map((n) => `#${n}`).join(' / ');
 }
@@ -128,7 +133,7 @@ function unitMap(unit, { highlight = new Set(), compact = false } = {}) {
           const cls = [text ? 'filled' : '', highlight.has(slot.id) ? 'hit' : ''].join(' ');
           return `<a class="cell ${cls}" href="${slotHref(slot.id)}" title="${esc(`${slotCode(unit, r + 1, c + 1)} ${text}`)}">
             <span class="code">${r + 1}-${c + 1}${
-              !compact && slot.compartments > 1 ? `<span class="fill">${slot.partNums.length}/${slot.compartments}</span>` : ''
+              !compact && slot.compartments > 1 ? `<span class="fill">${slotFill(slot)}/${slot.compartments}</span>` : ''
             }</span>${compact ? '' : `<span class="cell-text">${esc(text)}</span>`}</a>`;
         }).join('')}
       </div>`,
@@ -233,6 +238,10 @@ function renderFind({ params }) {
 function suggestionLine(part) {
   const [top] = suggestSlots({ ...part, category: part.category || guessCategory(part.name) }, store.state, { limit: 1 });
   if (!top) return '<span class="muted">No slot for this part yet.</span>';
+  if (top.kind === 'version') {
+    return `Another version of this part (#${esc(top.versionOf)}) is in ${slotBadge(store.getSlot(top.slotId))}<span class="muted">.
+      They look the same, so keep them together.</span>`;
+  }
   return `<span class="muted">No slot yet.</span> Suggested: ${slotBadge(store.getSlot(top.slotId))}
     <span class="muted">(${esc(top.reason)})</span>`;
 }
@@ -852,7 +861,7 @@ function renderSlot({ id }) {
     <h2 class="slot-title">📦 ${esc(store.codeOf(slot))}</h2>
     ${
       slot.compartments > 1
-        ? `<p class="muted">${slot.partNums.length} of ${slot.compartments} compartments used</p>`
+        ? `<p class="muted">${slotFill(slot)} of ${slot.compartments} compartments used</p>`
         : ''
     }
 
