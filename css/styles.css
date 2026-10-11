@@ -347,8 +347,10 @@ button.cell { border: none; font: inherit; font-size: 0.7rem; text-align: left; 
 .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, 0.3); vertical-align: -1px; margin-right: 4px; }
 
 /* App-made labels and the Brick Architect print list */
-.app-labels { display: grid; gap: 8px; margin-top: 8px; overflow-x: auto; }
-.app-labels img { height: 56px; width: auto; max-width: none; justify-self: start; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+.app-labels { display: grid; gap: 12px; margin-top: 8px; }
+.app-strip { overflow-x: auto; }
+.app-strip img { display: block; height: 48px; width: auto; max-width: none; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+.app-strip .actions { margin-top: 6px; }
 .ba-row .part-slots { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .ba-row .tick { width: 26px; height: 26px; flex: 0 0 auto; }
 .ba-row.done { opacity: 0.45; }
