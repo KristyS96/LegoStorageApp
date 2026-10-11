@@ -328,6 +328,22 @@ export function createStore(backend = defaultBackend()) {
       api.removePartFromSlot(fromId, partNum);
       api.addPartsToSlot(toId, [partNum]);
     },
+    // Put every slot entry of these part numbers in one slot (and take them out of the others).
+    gatherParts(partNums, toId) {
+      const nums = new Set(partNums.flatMap((n) => {
+        const part = api.getPart(n);
+        return [n, ...(part ? [part.partNum, ...part.altNums] : [])];
+      }).map(normNum));
+      const moving = [];
+      for (const slot of state.slots) {
+        if (slot.id === toId) continue;
+        const mine = slot.partNums.filter((n) => nums.has(normNum(n)));
+        if (!mine.length) continue;
+        moving.push(...mine);
+        api.updateSlot(slot.id, { partNums: slot.partNums.filter((n) => !nums.has(normNum(n))) });
+      }
+      api.addPartsToSlot(toId, [...new Set(moving)]);
+    },
     slotsForPart(partNum) {
       const part = api.getPart(partNum);
       const nums = new Set([partNum, ...(part ? [part.partNum, ...part.altNums] : [])].map(normNum));
@@ -383,6 +399,23 @@ export function createStore(backend = defaultBackend()) {
       Object.assign(part, normalizePart({ baLabel: value, updatedAt: Date.now() }, part));
       commit();
       return part;
+    },
+    // One part listed twice: keep the first, with the other's numbers as alternates.
+    // Slots keep their entries, which now find the kept part.
+    mergeParts(keepNum, dropNum) {
+      const keep = state.parts.find((p) => normNum(p.partNum) === normNum(keepNum));
+      const drop = state.parts.find((p) => normNum(p.partNum) === normNum(dropNum));
+      if (!keep || !drop || keep === drop) return keep;
+      const altNums = [...keep.altNums, drop.partNum, ...drop.altNums];
+      state.parts = state.parts.filter((p) => p !== drop);
+      Object.assign(keep, normalizePart({
+        altNums,
+        name: keep.name || drop.name,
+        imageUrl: keep.imageUrl || drop.imageUrl,
+        updatedAt: Date.now(),
+      }, keep));
+      commit();
+      return keep;
     },
     removePart(partNum) {
       const part = api.getPart(partNum);
