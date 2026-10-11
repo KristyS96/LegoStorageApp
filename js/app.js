@@ -3,9 +3,9 @@ import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
 import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
-import { brickArchitectLabelUrl, checkBrickArchitect, labelNumber, strips } from './labels.js';
+import { brickArchitectLabelUrl, checkBrickArchitect, fetchLabelFile, labelNumber, strips } from './labels.js';
 import { drawStrip } from './label-image.js';
-import { lbxStrips } from './lbx.js';
+import { appPiece, lbxPiece, lbxStrips, makeStrips } from './lbx.js';
 import { fetchSet, normalizeSetNum, planBuild } from './sets.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
@@ -13,6 +13,7 @@ import { SAMPLE } from './data/sample.js';
 import { createSync } from './sync.js';
 import { connectFirebase, syncErrorMessage } from './firebase-backend.js';
 import { FIREBASE_CONFIG, FAMILY_ID } from './firebase-config.js';
+import { LABEL_RELAY_URL } from './label-relay-config.js';
 
 const store = createStore();
 const view = document.getElementById('view');
@@ -1233,7 +1234,7 @@ function wireAppLabels(box, files) {
 // Most browsers aren't allowed to ask, so a refusal is remembered on the phone for a month.
 const BA_BLOCKED_KEY = 'brick-finder:ba-check-blocked';
 const baCheck = {
-  state: Date.now() - readLocal(BA_BLOCKED_KEY, 0) < 30 * 864e5 ? 'blocked' : 'unknown', // unknown | works | blocked
+  state: !LABEL_RELAY_URL && Date.now() - readLocal(BA_BLOCKED_KEY, 0) < 30 * 864e5 ? 'blocked' : 'unknown', // unknown | works | blocked
   asked: new Set(),
 };
 async function checkLabels(parts) {
@@ -1242,11 +1243,11 @@ async function checkLabels(parts) {
   todo.forEach((p) => baCheck.asked.add(labelNumber(p)));
   let changed = false;
   for (const batch of strips(todo, 4)) {
-    const answers = await Promise.all(batch.map((p) => checkBrickArchitect(p)));
+    const answers = await Promise.all(batch.map((p) => checkBrickArchitect(p, fetch, { relay: LABEL_RELAY_URL })));
     answers.forEach((has, i) => {
       if (has === null) {
         baCheck.state = 'blocked';
-        writeLocal(BA_BLOCKED_KEY, Date.now());
+        if (!LABEL_RELAY_URL) writeLocal(BA_BLOCKED_KEY, Date.now());
         return;
       }
       if (baCheck.state === 'unknown') baCheck.state = 'works';
@@ -1258,6 +1259,78 @@ async function checkLabels(parts) {
   const route = parseRoute();
   if (route.name === 'labels' && (changed || baCheck.state === 'blocked')) renderLabels(route);
 }
+
+// Strips ready to print, shown under "Print in batches".
+function showPrintStrips(made, note = '') {
+  const out = view.querySelector('#print-out');
+  if (!out) return;
+  const files = made.map((s) => new File([s.bytes], s.name, { type: 'application/octet-stream' }));
+  out.innerHTML = `${note ? `<p class="muted">${note}</p>` : ''}<div class="app-labels">${made
+    .map(
+      (s, i) => `<div class="app-strip">
+        <div><strong>Strip ${i + 1} of ${made.length}</strong> <span class="muted">· ${esc(s.keys.join(', '))}</span></div>
+        <div class="actions">
+          <button type="button" class="primary small" data-lbx-share="${i}">📤 Open in the Brother app</button>
+          <button type="button" class="small" data-lbx-download="${i}">⬇️ ${esc(s.name)}</button>
+        </div>
+      </div>`,
+    )
+    .join('')}</div>`;
+  wireAppLabels(out, files);
+}
+
+// With the relay: fetch each Brick Architect label (parts it doesn't have get an
+// app-made one, and are remembered) and put them all on strips, in drawer order.
+async function makePrintFiles(parts, button) {
+  const out = view.querySelector('#print-out');
+  button.disabled = true;
+  const pieces = [];
+  let made = 0;
+  try {
+    for (const [i, p] of parts.entries()) {
+      out.innerHTML = `<p class="muted">Getting label ${i + 1} of ${parts.length}…</p>`;
+      const bytes = p.baLabel === 'no' ? null : await fetchLabelFile(p, LABEL_RELAY_URL);
+      if (bytes) {
+        pieces.push(await lbxPiece(bytes, { key: labelNumber(p), measure: measureText }));
+        if (p.baLabel !== 'yes') store.setBaLabel(p.partNum, 'yes');
+      } else {
+        pieces.push(appPiece(p, measureText));
+        if (p.baLabel !== 'no') store.setBaLabel(p.partNum, 'no');
+        made++;
+      }
+    }
+  } catch (err) {
+    out.innerHTML = `<p class="notice">⚠️ ${esc(err.message)} Try again in a moment.</p>`;
+    button.disabled = false;
+    return;
+  }
+  if (parseRoute().name !== 'labels') return;
+  button.disabled = false;
+  showPrintStrips(makeStrips(pieces), made ? `${plural(made, 'part')} Brick Architect doesn't have got an app-made label.` : '');
+}
+
+// Without the relay: combine label files picked from the phone, in drawer order,
+// with app-made labels for parts Brick Architect doesn't have.
+async function combineFiles(files, parts) {
+  const order = new Map(parts.map((p, i) => [labelNumber(p), i]));
+  const pieces = [];
+  try {
+    for (const file of files) {
+      const key = file.name.replace(/\.lbx$/i, '').replace(/\s*\(\d+\)$/, ''); // "3001 (1).lbx" from a second download
+      pieces.push(await lbxPiece(new Uint8Array(await file.arrayBuffer()), { key, measure: measureText }));
+    }
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+  for (const p of parts.filter((x) => x.baLabel === 'no')) pieces.push(appPiece(p, measureText));
+  const rank = (piece) => order.get(piece.key) ?? parts.length;
+  pieces.sort((a, b) => rank(a) - rank(b));
+  const unique = [...new Map(pieces.map((p) => [p.key, p])).values()];
+  showPrintStrips(makeStrips(unique));
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 function renderLabels({ params }) {
   const source = params.get('unit') ?? 'queue';
@@ -1281,7 +1354,6 @@ function renderLabels({ params }) {
   const appParts = baParts.filter((p) => p.baLabel === 'no');
   const lbxParts = baParts.filter((p) => p.baLabel !== 'no');
   const printed = new Set(readLocal(PRINTED_KEY, []));
-  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
   const baStatus = (p) =>
     p.baLabel === 'yes'
@@ -1343,7 +1415,26 @@ function renderLabels({ params }) {
         : ''
     }
     ${
-      style === 'ba' && appParts.length
+      style === 'ba' && baParts.length
+        ? `<div class="card">
+            <h3 style="margin-top:0">Print in batches</h3>
+            ${
+              LABEL_RELAY_URL
+                ? `<p class="muted" style="margin-top:0">Puts all ${plural(baParts.length, 'label')} on strips of up to 10 (under
+                    28 cm each), in drawer order: Brick Architect's labels, and app-made ones for parts it doesn't have.
+                    Open each strip in the Brother app, print once, then cut at the | marks.</p>
+                   <div class="actions"><button class="primary" id="make-print">🖨️ Make print files</button></div>`
+                : `<p class="muted" style="margin-top:0">Download the Brick Architect labels, then pick them all here: the app puts
+                    them on strips of up to 10 (under 28 cm each), with the app-made labels below, so each strip prints in one go.</p>
+                   <label class="btn" for="combine-files">📂 Combine downloaded labels</label>
+                   <input type="file" id="combine-files" multiple hidden />`
+            }
+            <div id="print-out"></div>
+          </div>`
+        : ''
+    }
+    ${
+      style === 'ba' && appParts.length && !LABEL_RELAY_URL
         ? `<div class="card">
             <h3 style="margin-top:0">App-made labels (${appParts.length})</h3>
             <p class="muted" style="margin-top:0">Brick Architect doesn't have these, so the app makes label files with the part
@@ -1397,8 +1488,10 @@ function renderLabels({ params }) {
     toast('Marked as labeled');
     renderLabels({ params });
   });
+  view.querySelector('#make-print')?.addEventListener('click', (e) => makePrintFiles(baParts, e.target));
+  view.querySelector('#combine-files')?.addEventListener('change', (e) => combineFiles([...e.target.files], baParts));
   if (style === 'ba') {
-    if (appParts.length) {
+    if (appParts.length && !LABEL_RELAY_URL) {
       const box = view.querySelector('#app-labels');
       const { html, files } = appLabelsHtml(appParts);
       box.innerHTML = html;

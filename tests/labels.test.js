@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appLabelLines, brickArchitectLabelUrl, checkBrickArchitect, labelNumber, packStrips, strips } from '../js/labels.js';
+import { appLabelLines, brickArchitectLabelUrl, checkBrickArchitect, fetchLabelFile, labelNumber, packStrips, strips } from '../js/labels.js';
 import { createStore, memoryBackend } from '../js/store.js';
 
 test('Brick Architect label address follows brickarchitect.com/label/<number>.lbx', () => {
@@ -77,4 +77,24 @@ test('strips stay short enough to print in one go', () => {
   assert.deepEqual(packStrips([500, 50], { maxWidth: 320, gap: 10 }), [[0], [1]], 'an extra-wide label gets its own strip');
   assert.deepEqual(packStrips([1, 1, 1], { maxWidth: 1000, maxCount: 2 }), [[0, 1], [2]]);
   assert.deepEqual(packStrips([], { maxWidth: 10 }), []);
+});
+
+test('with the relay, labels are checked and fetched through it', async () => {
+  const calls = [];
+  const fetchImpl = async (url, opts = {}) => {
+    calls.push(`${opts.method ?? 'GET'} ${url}`);
+    if (url.endsWith('/3001.lbx')) return { ok: true, status: 200, headers: { get: () => 'application/octet-stream' }, arrayBuffer: async () => new Uint8Array([0x50, 0x4b]).buffer };
+    return { ok: false, status: 404, headers: { get: () => 'text/plain' } };
+  };
+  const relay = 'https://brick-labels.example.workers.dev/';
+  assert.equal(await checkBrickArchitect({ partNum: '3001' }, fetchImpl, { relay }), true);
+  assert.equal(await checkBrickArchitect({ partNum: '99999' }, fetchImpl, { relay }), false);
+  assert.deepEqual([...(await fetchLabelFile({ partNum: '3001' }, relay, fetchImpl))], [0x50, 0x4b]);
+  assert.equal(await fetchLabelFile({ partNum: '15573', labelNum: '3794' }, relay, fetchImpl), null);
+  assert.deepEqual(calls, [
+    'HEAD https://brick-labels.example.workers.dev/label/3001.lbx',
+    'HEAD https://brick-labels.example.workers.dev/label/99999.lbx',
+    'GET https://brick-labels.example.workers.dev/label/3001.lbx',
+    'GET https://brick-labels.example.workers.dev/label/3794.lbx',
+  ]);
 });
