@@ -3,7 +3,8 @@ import { searchParts } from './search.js';
 import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
 import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
-import { brickArchitectLabelUrl, labelNumber } from './labels.js';
+import { brickArchitectLabelUrl, checkBrickArchitect, labelNumber, strips } from './labels.js';
+import { labelFiles } from './label-image.js';
 import { fetchSet, normalizeSetNum, planBuild } from './sets.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
@@ -376,9 +377,12 @@ function renderPart({ id: num, params }) {
         </div>
         <div>
           <label>&nbsp;</label>
-          ${baLabelLink(p, '🏷️ Download label (.lbx)')}
+          ${p.baLabel === 'no' ? '<button type="button" class="small" id="app-label-share" disabled>📤 App-made label</button>' : baLabelLink(p, '🏷️ Download label (.lbx)')}
         </div>
       </div>
+      <label class="check"><input type="checkbox" name="baMissing" ${p.baLabel === 'no' ? 'checked' : ''} />
+        Brick Architect doesn't have this label (the app makes one: number and name)</label>
+      ${p.baLabel === 'no' ? '<div class="app-labels" id="app-label"></div>' : ''}
       <label for="imageUrl">Picture URL (optional)</label>
       <input id="imageUrl" name="imageUrl" value="${esc(p.imageUrl)}" placeholder="https://…" />
       <div class="actions">
@@ -421,7 +425,15 @@ function renderPart({ id: num, params }) {
   `;
 
   const form = view.querySelector('#part-form');
-  const save = () => store.savePart(p.partNum, Object.fromEntries(new FormData(form)));
+  const save = () => {
+    const input = Object.fromEntries(new FormData(form));
+    const missing = 'baMissing' in input;
+    delete input.baMissing;
+    if (missing) input.baLabel = 'no';
+    else if (p.baLabel === 'no') input.baLabel = '';
+    return store.savePart(p.partNum, input);
+  };
+  if (p.baLabel === 'no') showAppLabels([p], view.querySelector('#app-label'), view.querySelector('#app-label-share'));
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1157,6 +1169,64 @@ function labelHtml(slot, style) {
   </div>`;
 }
 
+const PRINTED_KEY = 'brick-finder:printed-labels'; // label numbers ticked off on this phone
+
+// Hand files to the share sheet (to Brother's app, or Save Image), else download them.
+// Call straight from a tap: phones only allow sharing right after one.
+function shareFiles(files) {
+  if (navigator.canShare?.({ files })) {
+    navigator.share({ files }).catch((err) => {
+      if (err.name !== 'AbortError') toast(`Couldn't share: ${err.message}`);
+    });
+    return;
+  }
+  for (const file of files) {
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: file.name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
+}
+
+// Draw app-made labels into `box` (previews) and wire `button` to share them.
+async function showAppLabels(parts, box, button) {
+  const files = await labelFiles(parts);
+  if (!box.isConnected) return;
+  box.innerHTML = files
+    .map((f) => `<img src="${URL.createObjectURL(f)}" alt="Label strip: ${esc(f.name)}" />`)
+    .join('');
+  if (button) {
+    button.disabled = false;
+    button.addEventListener('click', () => shareFiles(files));
+  }
+}
+
+// Ask Brick Architect which labels it has. Answers are saved on the part (and shared
+// with the family), so each label is only asked about once.
+const baCheck = { state: 'unknown', asked: new Set() }; // state: unknown | works | blocked
+async function checkLabels(parts) {
+  const todo = parts.filter((p) => !p.baLabel && !baCheck.asked.has(labelNumber(p)));
+  if (!todo.length || baCheck.state === 'blocked') return;
+  todo.forEach((p) => baCheck.asked.add(labelNumber(p)));
+  let changed = false;
+  for (const batch of strips(todo, 4)) {
+    const answers = await Promise.all(batch.map((p) => checkBrickArchitect(p)));
+    answers.forEach((has, i) => {
+      if (has === null) {
+        baCheck.state = 'blocked';
+        return;
+      }
+      if (baCheck.state === 'unknown') baCheck.state = 'works';
+      store.setBaLabel(batch[i].partNum, has ? 'yes' : 'no');
+      changed = true;
+    });
+    if (baCheck.state === 'blocked') break;
+  }
+  const route = parseRoute();
+  if (route.name === 'labels' && (changed || baCheck.state === 'blocked')) renderLabels(route);
+}
+
 function renderLabels({ params }) {
   const source = params.get('unit') ?? 'queue';
   const style = params.get('style') ?? 'ba';
@@ -1171,10 +1241,34 @@ function renderLabels({ params }) {
     return `#/labels?${qs}`;
   };
   // Brick Architect labels are per part: one file for each part in each slot.
-  const partOf = (n) => store.getPart(n) ?? { partNum: n, altNums: [], name: '' };
+  // Parts Brick Architect doesn't have get an app-made label instead.
+  const partOf = (n) => store.getPart(n) ?? { partNum: n, altNums: [], name: '', baLabel: '' };
   const baParts = [
     ...new Map(slots.flatMap((s) => s.partNums.map(partOf)).map((p) => [labelNumber(p), p])).values(),
   ];
+  const appParts = baParts.filter((p) => p.baLabel === 'no');
+  const lbxParts = baParts.filter((p) => p.baLabel !== 'no');
+  const printed = new Set(readLocal(PRINTED_KEY, []));
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  const baStatus = (p) =>
+    p.baLabel === 'yes'
+      ? '<span>✓ on Brick Architect</span>'
+      : baCheck.state === 'blocked' || baCheck.asked.has(labelNumber(p))
+        ? ''
+        : '<span class="muted">checking…</span>';
+  const baRow = (s, p) =>
+    p.baLabel === 'no'
+      ? `<li class="part"><div class="part-link"><span class="slot-badge">${esc(store.codeOf(s))}</span>
+          <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
+          <div class="part-meta"><span>#${esc(p.partNum)}</span><span>app-made label</span></div></div></div>
+          <div class="part-slots"><button class="small" data-ba="" data-num="${esc(p.partNum)}" title="Brick Architect does have it">↩︎ Brick Architect</button></div></li>`
+      : `<li class="part ba-row ${printed.has(labelNumber(p)) ? 'done' : ''}"><div class="part-link"><span class="slot-badge">${esc(store.codeOf(s))}</span>
+          <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
+          <div class="part-meta"><span>#${esc(labelNumber(p))}.lbx</span>${baStatus(p)}</div></div></div>
+          <div class="part-slots">${baLabelLink(p, '⬇️ Label')}
+            <button class="small" data-ba="no" data-num="${esc(p.partNum)}" title="Brick Architect doesn't have this label">✗ Missing</button>
+            <input type="checkbox" class="tick" data-label="${esc(labelNumber(p))}" ${printed.has(labelNumber(p)) ? 'checked' : ''} aria-label="Printed" title="Printed" /></div></li>`;
 
   view.innerHTML = `
     <div class="no-print">
@@ -1195,7 +1289,7 @@ function renderLabels({ params }) {
         </div>
         <p class="muted">${
           style === 'ba'
-            ? 'Official Brick Architect labels (12 mm), one per part. Open the downloaded .lbx files in P-touch Editor to print.'
+            ? 'Official Brick Architect labels (12 mm), one per part: open each .lbx file in the Brother app to print. Parts Brick Architect doesn\'t have get an app-made label with the part number and name.'
             : style === 'code'
               ? 'Small stickers with just the slot code.'
               : 'Slot code, part names and numbers (and pictures, when a part has one).'
@@ -1203,28 +1297,35 @@ function renderLabels({ params }) {
         <div class="actions">
           ${
             style === 'ba'
-              ? `<button class="primary" id="ba-all" ${baParts.length ? '' : 'disabled'}>⬇️ Download ${baParts.length} label${baParts.length === 1 ? '' : 's'}</button>`
-              : `<button class="primary" id="print" ${slots.length ? '' : 'disabled'}>🖨️ Print ${slots.length} label${slots.length === 1 ? '' : 's'}</button>`
+              ? `<button class="primary" id="ba-all" ${lbxParts.length ? '' : 'disabled'}>⬇️ Download ${plural(lbxParts.length, 'label')}</button>`
+              : `<button class="primary" id="print" ${slots.length ? '' : 'disabled'}>🖨️ Print ${plural(slots.length, 'label')}</button>`
           }
           ${source === 'queue' && slots.length ? '<button id="done">✓ Mark as labeled</button>' : ''}
         </div>
       </div>
     </div>
     ${
+      style === 'ba' && baCheck.state === 'blocked' && lbxParts.some((p) => !p.baLabel)
+        ? `<div class="card notice">Couldn't ask Brick Architect which labels it has from this browser. If a label won't
+            download (Brick Architect says "not found"), tap <strong>✗ Missing</strong> and the app makes one instead.</div>`
+        : ''
+    }
+    ${
+      style === 'ba' && appParts.length
+        ? `<div class="card">
+            <h3 style="margin-top:0">App-made labels (${appParts.length})</h3>
+            <p class="muted" style="margin-top:0">Brick Architect doesn't have these. Each picture holds up to 10 labels and
+              prints in one go: share it to the Brother app (or save it to Photos and add it there), print, then cut on the dashed lines.</p>
+            <div class="app-labels" id="app-labels"></div>
+            <div class="actions"><button class="primary" id="app-share" disabled>📤 Share ${plural(strips(appParts).length, 'picture')}</button></div>
+          </div>`
+        : ''
+    }
+    ${
       slots.length && style === 'ba'
         ? `<div class="card ba-list" style="padding:0"><ul class="part-list">${slots
             .filter((s) => s.partNums.length)
-            .map((s) =>
-              s.partNums
-                .map(partOf)
-                .map(
-                  (p) => `<li class="part"><div class="part-link"><span class="slot-badge">${esc(store.codeOf(s))}</span>
-                    <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
-                    <div class="part-meta"><span>#${esc(labelNumber(p))}.lbx</span></div></div></div>
-                    <div class="part-slots">${baLabelLink(p, '⬇️ Label')}</div></li>`,
-                )
-                .join(''),
-            )
+            .map((s) => s.partNums.map(partOf).map((p) => baRow(s, p)).join(''))
             .join('')}</ul></div>`
         : slots.length
         ? `<div class="labels ${style === 'code' ? 'codes' : ''}">${slots.map((s) => labelHtml(s, style)).join('')}</div>`
@@ -1234,20 +1335,40 @@ function renderLabels({ params }) {
   view.querySelector('#print')?.addEventListener('click', () => window.print());
   view.querySelector('#ba-all')?.addEventListener('click', () => {
     // Hidden frames download each file without opening a tab per label (pop-up blockers stop those).
-    baParts.forEach((p, i) =>
+    lbxParts.forEach((p, i) =>
       setTimeout(() => {
         const frame = Object.assign(document.createElement('iframe'), { src: brickArchitectLabelUrl(p), hidden: true });
         document.body.append(frame);
         setTimeout(() => frame.remove(), 60000);
       }, i * 600),
     );
-    toast(`Downloading ${baParts.length} label${baParts.length === 1 ? '' : 's'}… your browser may ask to allow several downloads.`);
+    toast(`Downloading ${plural(lbxParts.length, 'label')}… your browser may ask to allow several downloads.`);
   });
+  view.querySelectorAll('[data-ba]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      store.setBaLabel(btn.dataset.num, btn.dataset.ba);
+      if (btn.dataset.ba === '') baCheck.asked.add(labelNumber(store.getPart(btn.dataset.num)));
+      renderLabels({ params });
+    }),
+  );
+  view.querySelectorAll('.ba-row .tick').forEach((box) =>
+    box.addEventListener('change', () => {
+      if (box.checked) printed.add(box.dataset.label);
+      else printed.delete(box.dataset.label);
+      box.closest('.ba-row').classList.toggle('done', box.checked);
+      writeLocal(PRINTED_KEY, [...printed]);
+    }),
+  );
   view.querySelector('#done')?.addEventListener('click', () => {
     slots.forEach((s) => store.updateSlot(s.id, { needsLabel: false }));
+    writeLocal(PRINTED_KEY, [...printed].filter((n) => !baParts.some((p) => labelNumber(p) === n)));
     toast('Marked as labeled');
     renderLabels({ params });
   });
+  if (style === 'ba') {
+    if (appParts.length) showAppLabels(appParts, view.querySelector('#app-labels'), view.querySelector('#app-share'));
+    checkLabels(lbxParts);
+  }
 }
 
 // ---------- Family sharing ----------
