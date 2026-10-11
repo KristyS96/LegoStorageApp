@@ -116,6 +116,12 @@ function slotHasData(s) {
   return s.partNums.length || s.label || s.needsLabel || s.compartments > 1;
 }
 
+function baLabelStatus(input, existing) {
+  const relabeled = input.labelNum !== undefined && clean(input.labelNum) !== clean(existing.labelNum);
+  const value = input.baLabel ?? (relabeled ? '' : existing.baLabel);
+  return value === 'yes' || value === 'no' ? value : '';
+}
+
 function normalizePart(input, existing = {}) {
   const partNum = clean(existing.partNum ?? input.partNum);
   const name = clean(input.name ?? existing.name);
@@ -127,6 +133,9 @@ function normalizePart(input, existing = {}) {
     imageUrl: clean(input.imageUrl ?? existing.imageUrl),
     // Number Brick Architect files the label under, when it isn't the part number.
     labelNum: clean(input.labelNum ?? existing.labelNum),
+    // Whether Brick Architect has that label: 'yes', 'no' or '' (not known yet).
+    // A new label number means it hasn't been checked.
+    baLabel: baLabelStatus(input, existing),
     updatedAt: input.updatedAt ?? Date.now(),
   };
 }
@@ -364,6 +373,14 @@ export function createStore(backend = defaultBackend()) {
       if (!part.imageUrl && clean(imageUrl)) changes.imageUrl = clean(imageUrl);
       if (changes.name) changes.category = guessCategory(changes.name) || part.category;
       Object.assign(part, changes, Object.keys(changes).length ? { updatedAt: Date.now() } : {});
+      commit();
+      return part;
+    },
+    // Record whether Brick Architect has this part's label ('yes', 'no' or '').
+    setBaLabel(num, value) {
+      const part = api.getPart(num);
+      if (!part || part.baLabel === value) return part;
+      Object.assign(part, normalizePart({ baLabel: value, updatedAt: Date.now() }, part));
       commit();
       return part;
     },
