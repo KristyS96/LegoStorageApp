@@ -80,6 +80,29 @@ family catalog with what it has; the next one can use the family catalog or comb
 
 To add or remove someone, edit the address list in the Firestore rules and publish again.
 
+## Printing labels in batches
+
+The Brother phone app (Design&Print 2, for the PT-P300BT) prints one file at a time, so the Labels tab puts several
+labels on one strip: up to 10, under 28 cm (the PT-P300BT prints up to 30 cm), in drawer order, with a `|` cut mark
+between them. Brick Architect's labels and app-made ones (part number over name, for parts Brick Architect doesn't
+have) can share a strip. Open a strip in the Brother app, print once, cut.
+
+Browsers aren't allowed to read files from brickarchitect.com, so there are two ways in:
+
+- **With the label relay (recommended):** a tiny Cloudflare Worker (`cloudflare/label-relay.js`) fetches Brick
+  Architect's label files for the app. Then **Labels → Make print files** does everything, and the app can tell which
+  labels Brick Architect has. It only fetches `brickarchitect.com/label/<number>.lbx`.
+- **Without it:** download the Brick Architect labels as before, then **Labels → Combine downloaded labels** and pick
+  them all.
+
+**Setting up the relay** (free; about 5 minutes):
+
+1. Sign up at [dash.cloudflare.com](https://dash.cloudflare.com) (the free plan is plenty).
+2. **Workers & Pages → Create → Create Worker** (the "Hello World" starter), name it e.g. `brick-labels`, **Deploy**.
+3. **Edit code**, replace everything with the contents of `cloudflare/label-relay.js`, then **Deploy**.
+4. Copy the Worker's address (like `https://brick-labels.yourname.workers.dev`) into `js/label-relay-config.js`
+   (`LABEL_RELAY_URL`). Test it by opening `<address>/label/3001.lbx`: it should download a label file.
+
 ## Part numbers
 
 The app uses **BrickLink/LEGO part numbers** everywhere, the same ones on Brick Architect labels and in Brickognize
@@ -110,7 +133,9 @@ js/store.js           data model (units, slots, parts), persistence, import/expo
 js/search.js          tokenized, scored search across numbers, names and slot codes
 js/sorting.js         part kinds and shapes, "where should this go?" suggestions
 js/labels.js          Brick Architect label addresses and checks
-js/lbx.js             app-made label files (.lbx) for 12 mm tape
+js/lbx.js             label files (.lbx): app-made labels, reading Brick Architect's, strips of several
+js/label-relay-config.js  address of the label relay
+cloudflare/label-relay.js Cloudflare Worker that fetches Brick Architect's label files for the app
 js/label-image.js     previews of app-made labels
 js/sets.js            set parts lists from Rebrickable and the drawer-by-drawer pick list
 js/identify.js        Brickognize photo recognition, Rebrickable lookups

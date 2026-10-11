@@ -11,12 +11,18 @@ export function brickArchitectLabelUrl(part) {
   return num ? `https://brickarchitect.com/label/${encodeURIComponent(num)}.lbx` : '';
 }
 
+/** Address of a part's label through the family's relay (cloudflare/label-relay.js). */
+export function relayLabelUrl(part, relay) {
+  const num = labelNumber(part);
+  return relay && num ? `${relay.replace(/\/+$/, '')}/label/${encodeURIComponent(num)}.lbx` : '';
+}
+
 /**
  * Does Brick Architect have this label? true or false, or null when the browser
- * can't tell (offline, or the site doesn't let other web pages ask).
+ * can't tell (offline, or the site doesn't let web pages ask; the relay does).
  */
-export async function checkBrickArchitect(part, fetchImpl = fetch) {
-  const url = brickArchitectLabelUrl(part);
+export async function checkBrickArchitect(part, fetchImpl = fetch, { relay = '' } = {}) {
+  const url = relay ? relayLabelUrl(part, relay) : brickArchitectLabelUrl(part);
   if (!url) return false;
   let res;
   try {
@@ -28,6 +34,14 @@ export async function checkBrickArchitect(part, fetchImpl = fetch) {
   if (!res.ok) return null;
   // A missing file can come back as the site's "not found" web page.
   return !/text\/html/i.test(res.headers?.get?.('content-type') ?? '');
+}
+
+/** A part's Brick Architect label file through the relay; null if Brick Architect has none. */
+export async function fetchLabelFile(part, relay, fetchImpl = fetch) {
+  const res = await fetchImpl(relayLabelUrl(part, relay));
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Couldn't get label ${labelNumber(part)} (${res.status}).`);
+  return new Uint8Array(await res.arrayBuffer());
 }
 
 /** The two lines of an app-made label: part number, then name. */

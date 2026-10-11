@@ -1,10 +1,14 @@
-// Brother P-touch label files (.lbx) for parts Brick Architect has no label for,
-// so they open in Design&Print 2 / P-touch Editor like Brick Architect's own files.
+// Brother P-touch label files (.lbx), printed from Design&Print 2 / P-touch Editor.
 //
-// An .lbx is a ZIP holding label.xml (the layout) and prop.xml (file details).
-// The layout follows files saved by P-touch Editor for 12 mm tape: two text
-// objects per part (number in bold over its name), several parts side by side on
-// one strip with a "|" cut mark between them. Format notes: github.com/jdlien/lbx-utils.
+// An .lbx is a ZIP holding label.xml (the layout), prop.xml (file details) and any
+// pictures. The app makes strips: several labels side by side in one file, with a
+// "|" cut mark between them, so one print makes them all. A strip can mix
+//  - app-made labels (part number in bold over its name) for parts Brick Architect
+//    has no label for, and
+//  - Brick Architect's own labels (a picture and a text block), whose objects are
+//    moved along the tape to their place on the strip.
+// The layout follows files saved by P-touch Editor for 12 mm tape. Format notes:
+// github.com/jdlien/lbx-utils.
 import { appLabelLines, packStrips } from './labels.js';
 
 const NS =
@@ -85,33 +89,99 @@ export function labelLayout(part, measure = approxWidth) {
   return { num, name, numWidth, nameWidth, width: Math.max(numWidth, nameWidth) };
 }
 
-/** label.xml for a strip of labels. */
-export function labelXml(layouts) {
+/** An app-made label as a piece of a strip: objects drawn from x = LEFT, and its width. */
+export function appPiece(part, measure = approxWidth) {
+  const l = labelLayout(part, measure);
+  const numHeight = lineHeight(NUM_SIZE);
+  return {
+    key: l.num,
+    width: l.width,
+    files: [],
+    objects:
+      textObject({ x: LEFT, y: TOP, width: l.numWidth, height: numHeight, text: l.num, size: NUM_SIZE, bold: true, name: 'Number' }) +
+      textObject({ x: LEFT, y: TOP + numHeight - 0.2, width: l.nameWidth, height: lineHeight(l.name.size), text: l.name.text, size: l.name.size, name: 'Name' }),
+  };
+}
+
+const unxml = (s) =>
+  s.replace(/&(lt|gt|quot|apos|amp|#(\d+)|#x([\da-f]+));/gi, (m, name, dec, hex) =>
+    dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : { lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' }[name.toLowerCase()],
+  );
+const num = (tag, attr) => Number((tag.match(new RegExp(`\\s${attr}="(-?[\\d.]+)pt"`)) ?? [])[1] ?? NaN);
+
+/** Move every object's x position by dx points. */
+export function shiftX(objects, dx) {
+  return objects.replace(/(\sx=")(-?[\d.]+)pt"/g, (m, pre, x) => `${pre}${Math.round((Number(x) + dx) * 1000) / 1000}pt"`);
+}
+
+/**
+ * A label read from an .lbx (e.g. Brick Architect's) as a piece of a strip.
+ * Text frames are trimmed to their text, so the label is only as long as what's on it.
+ */
+export async function lbxPiece(bytes, { key = '', measure = approxWidth } = {}) {
+  const files = await unzip(bytes);
+  const xmlText = new TextDecoder().decode(files['label.xml'] ?? new Uint8Array());
+  const inner = xmlText.match(/<pt:objects>([^]*)<\/pt:objects>/)?.[1];
+  if (!inner) throw new Error(`${key || 'This file'} isn't a label file.`);
+  let left = Infinity;
+  let right = -Infinity;
+  const objects = inner.replace(/<text:text>[^]*?<\/text:text>|<pt:objectStyle\b[^>]*>/g, (chunk) => {
+    if (!chunk.startsWith('<text:text>')) {
+      // A picture or another object: its frame is its size.
+      const x = num(chunk, 'x');
+      left = Math.min(left, x);
+      right = Math.max(right, x + num(chunk, 'width'));
+      return chunk;
+    }
+    const style = chunk.match(/<pt:objectStyle\b[^>]*>/)[0];
+    const x = num(style, 'x');
+    const size = num(chunk.match(/<text:fontExt\b[^>]*>/)?.[0] ?? '', 'size') || 8;
+    const text = unxml(chunk.match(/<pt:data>([^]*?)<\/pt:data>/)?.[1] ?? '');
+    const textWidth = Math.max(0, ...text.split(/\r?\n/).map((line) => measure(line, size, true))) + 2;
+    const width = Math.min(num(style, 'width'), textWidth);
+    left = Math.min(left, x);
+    right = Math.max(right, x + width);
+    const trimmed = style.replace(/(\swidth=")[\d.]+pt"/, `$1${Math.round(width * 1000) / 1000}pt"`);
+    // Justified text would stretch to the frame; left-aligned looks the same at its own width.
+    return chunk.replace(style, trimmed).replace('horizontalAlignment="JUSTIFY"', 'horizontalAlignment="LEFT"');
+  });
+  const pictures = Object.entries(files)
+    .filter(([name]) => name !== 'label.xml' && name !== 'prop.xml')
+    .map(([name, data]) => ({ name, data }));
+  if (!Number.isFinite(left)) throw new Error(`${key || 'This label'} is empty.`);
+  return { key, width: right - left, files: pictures, objects: shiftX(objects, LEFT - left) };
+}
+
+/** label.xml and pictures for a strip of pieces, each picture renamed so they don't clash. */
+export function stripContents(pieces) {
   const objects = [];
+  const files = [];
   let x = LEFT;
-  layouts.forEach((l, i) => {
+  pieces.forEach((piece, i) => {
     if (i) {
       const cutWidth = approxWidth('|', CUT_SIZE);
       objects.push(textObject({ x: x + GAP / 2 - cutWidth / 2, y: TOP, width: cutWidth, height: BAND, text: '|', size: CUT_SIZE, name: `Cut${i}` }));
       x += GAP;
     }
-    const numHeight = lineHeight(NUM_SIZE);
-    objects.push(textObject({ x, y: TOP, width: l.numWidth, height: numHeight, text: l.num, size: NUM_SIZE, bold: true, name: `Number${i + 1}` }));
-    objects.push(
-      textObject({ x, y: TOP + numHeight - 0.2, width: l.nameWidth, height: lineHeight(l.name.size), text: l.name.text, size: l.name.size, name: `Name${i + 1}` }),
-    );
-    x += l.width;
+    let part = shiftX(piece.objects, x - LEFT).replace(/objectName="([^"]*)"/g, `objectName="$1_${i + 1}"`);
+    for (const file of piece.files) {
+      const renamed = `L${i + 1}_${file.name}`;
+      part = part.split(`fileName="${file.name}"`).join(`fileName="${renamed}"`);
+      files.push({ name: renamed, data: file.data });
+    }
+    objects.push(part);
+    x += piece.width;
   });
   // A little room at the end: the Brother app's font runs slightly wider than measured.
   const length = Math.max(x - LEFT + END_PAD, 34.4);
-  return (
+  const xmlText =
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
     `<pt:document ${NS} version="1.9" generator="com.brother.PtouchEditor"><pt:body currentSheet="Sheet 1" direction="LTR"><style:sheet name="Sheet 1">` +
     '<style:paper media="0" width="33.6pt" height="2834.4pt" marginLeft="2.8pt" marginTop="5.6pt" marginRight="2.8pt" marginBottom="5.6pt" orientation="landscape" autoLength="true" monochromeDisplay="true" printColorDisplay="false" printColorsID="0" paperColor="#FFFFFF" paperInk="#000000" split="1" format="259" backgroundTheme="0" printerID="30256" printerName="Brother PT-P710BT"/>' +
     '<style:cutLine regularCut="0pt" freeCut=""/>' +
     `<style:backGround x="${pt(LEFT)}" y="${pt(TOP)}" width="${pt(length)}" height="${pt(BAND)}" brushStyle="NULL" brushId="0" userPattern="NONE" userPatternId="0" color="#000000" printColorNumber="1" backColor="#FFFFFF" backPrintColorNumber="0"/>` +
-    `<pt:objects>${objects.join('')}</pt:objects></style:sheet></pt:body></pt:document>`
-  );
+    `<pt:objects>${objects.join('')}</pt:objects></style:sheet></pt:body></pt:document>`;
+  return { xml: xmlText, files };
 }
 
 export function propXml(now = new Date()) {
@@ -191,31 +261,62 @@ export function zip(files) {
   return out;
 }
 
-/** The bytes of an .lbx file for a strip of labels. */
-export function lbxBytes(layouts, now = new Date()) {
+/** Files in a ZIP (stored or deflated), as { name: Uint8Array }. */
+export async function unzip(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = bytes.length - 22;
+  while (end >= 0 && view.getUint32(end, true) !== 0x06054b50) end--;
+  if (end < 0) throw new Error("This isn't a label file.");
+  const count = view.getUint16(end + 10, true);
+  let at = view.getUint32(end + 16, true);
+  const out = {};
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(at, true) !== 0x02014b50) throw new Error('This label file is damaged.');
+    const method = view.getUint16(at + 10, true);
+    const size = view.getUint32(at + 20, true);
+    const nameLen = view.getUint16(at + 28, true);
+    const extraLen = view.getUint16(at + 30, true);
+    const commentLen = view.getUint16(at + 32, true);
+    const local = view.getUint32(at + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(at + 46, at + 46 + nameLen));
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    const raw = bytes.subarray(start, start + size);
+    if (method === 0) out[name] = raw;
+    else if (method === 8) out[name] = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    else throw new Error(`Can't read ${name} (compression ${method}).`);
+    at += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+/** The bytes of an .lbx file for a strip of pieces. */
+export function stripBytes(pieces, now = new Date()) {
   const enc = new TextEncoder();
-  return zip([
-    { name: 'label.xml', data: enc.encode(labelXml(layouts)) },
-    { name: 'prop.xml', data: enc.encode(propXml(now)) },
-  ]);
+  const { xml: label, files } = stripContents(pieces);
+  return zip([{ name: 'label.xml', data: enc.encode(label) }, { name: 'prop.xml', data: enc.encode(propXml(now)) }, ...files]);
 }
 
 /**
- * Group parts into strips that each print in one go (at most 10 parts, under
- * 280 mm) and make an .lbx for each. Returns [{ parts, name, bytes }].
+ * Group pieces into strips that each print in one go (at most 10, under 280 mm)
+ * and make an .lbx for each. Returns [{ keys, name, bytes }].
  */
-export function lbxStrips(parts, { measure = approxWidth, now = new Date() } = {}) {
-  const layouts = parts.map((p) => labelLayout(p, measure));
+export function makeStrips(pieces, { now = new Date() } = {}) {
   const groups = packStrips(
-    layouts.map((l) => l.width),
+    pieces.map((p) => p.width),
     { maxWidth: MAX_STRIP_PT, gap: GAP, maxCount: MAX_PER_STRIP },
   );
   return groups.map((idx, i) => ({
-    parts: idx.map((j) => parts[j]),
+    keys: idx.map((j) => pieces[j].key),
     name:
       groups.length === 1 && idx.length === 1
-        ? `${layouts[idx[0]].num.replace(/[^\w.-]+/g, '_') || 'part'}-label.lbx`
+        ? `${String(pieces[idx[0]].key).replace(/[^\w.-]+/g, '_') || 'part'}-label.lbx`
         : `labels-${i + 1}-of-${groups.length}.lbx`,
-    bytes: lbxBytes(idx.map((j) => layouts[j]), now),
+    bytes: stripBytes(idx.map((j) => pieces[j]), now),
   }));
+}
+
+/** Strips of app-made labels for these parts. Returns [{ parts, name, bytes }]. */
+export function lbxStrips(parts, { measure = approxWidth, now = new Date() } = {}) {
+  const pieces = parts.map((p) => appPiece(p, measure));
+  return makeStrips(pieces, { now }).map((s) => ({ ...s, parts: s.keys.map((k) => parts[pieces.findIndex((p) => p.key === k)]) }));
 }
