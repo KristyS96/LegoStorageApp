@@ -4,7 +4,8 @@ import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
 import { guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { brickArchitectLabelUrl, checkBrickArchitect, labelNumber, strips } from './labels.js';
-import { labelFiles } from './label-image.js';
+import { drawStrip } from './label-image.js';
+import { lbxStrips } from './lbx.js';
 import { fetchSet, normalizeSetNum, planBuild } from './sets.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
@@ -377,7 +378,7 @@ function renderPart({ id: num, params }) {
         </div>
         <div>
           <label>&nbsp;</label>
-          ${p.baLabel === 'no' ? '<button type="button" class="small" id="app-label-share" disabled>📤 App-made label</button>' : baLabelLink(p, '🏷️ Download label (.lbx)')}
+          ${p.baLabel === 'no' ? '' : baLabelLink(p, '🏷️ Download label (.lbx)')}
         </div>
       </div>
       <label class="check"><input type="checkbox" name="baMissing" ${p.baLabel === 'no' ? 'checked' : ''} />
@@ -433,7 +434,12 @@ function renderPart({ id: num, params }) {
     else if (p.baLabel === 'no') input.baLabel = '';
     return store.savePart(p.partNum, input);
   };
-  if (p.baLabel === 'no') showAppLabels([p], view.querySelector('#app-label'), view.querySelector('#app-label-share'));
+  if (p.baLabel === 'no') {
+    const box = view.querySelector('#app-label');
+    const { html, files } = appLabelsHtml([p]);
+    box.innerHTML = html;
+    wireAppLabels(box, files);
+  }
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1171,41 +1177,65 @@ function labelHtml(slot, style) {
 
 const PRINTED_KEY = 'brick-finder:printed-labels'; // label numbers ticked off on this phone
 
-// Hand files to the share sheet (to Brother's app, or Save Image), else download them.
+// Hand a file to the share sheet (to open it in the Brother app), or download it.
 // Call straight from a tap: phones only allow sharing right after one.
-function shareFiles(files) {
-  if (navigator.canShare?.({ files })) {
-    navigator.share({ files }).catch((err) => {
+function shareFile(file) {
+  if (navigator.canShare?.({ files: [file] })) {
+    navigator.share({ files: [file] }).catch((err) => {
       if (err.name !== 'AbortError') toast(`Couldn't share: ${err.message}`);
     });
-    return;
-  }
-  for (const file of files) {
-    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: file.name });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  } else {
+    downloadFile(file);
   }
 }
 
-// Draw app-made labels into `box` (previews) and wire `button` to share them.
-async function showAppLabels(parts, box, button) {
-  const files = await labelFiles(parts);
-  if (!box.isConnected) return;
-  box.innerHTML = files
-    .map((f) => `<img src="${URL.createObjectURL(f)}" alt="Label strip: ${esc(f.name)}" />`)
+function downloadFile(file) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: file.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
+// Text widths in points, measured with a font close to the Brother app's Helsinki.
+const measureCtx = document.createElement('canvas').getContext('2d');
+function measureText(text, size, bold) {
+  measureCtx.font = `${bold ? 700 : 400} ${size}px Helvetica, Arial, sans-serif`;
+  return measureCtx.measureText(text).width * 1.05;
+}
+
+// App-made labels as .lbx files: one strip per file (up to 10 parts, under 28 cm),
+// each with a preview and buttons to open it in the Brother app or download it.
+function appLabelsHtml(parts) {
+  const strips = lbxStrips(parts, { measure: measureText });
+  const files = strips.map((s) => new File([s.bytes], s.name, { type: 'application/octet-stream' }));
+  const html = strips
+    .map(
+      (s, i) => `<div class="app-strip">
+        <img src="${drawStrip(s.parts).toDataURL('image/png')}" alt="Preview: ${esc(s.parts.map((p) => p.partNum).join(', '))}" />
+        <div class="actions">
+          <button type="button" class="primary small" data-lbx-share="${i}">📤 Open ${strips.length > 1 ? `file ${i + 1} ` : ''}in the Brother app</button>
+          <button type="button" class="small" data-lbx-download="${i}">⬇️ ${esc(s.name)}</button>
+        </div>
+      </div>`,
+    )
     .join('');
-  if (button) {
-    button.disabled = false;
-    if (files.length > 1) button.textContent = `📤 Share ${files.length} pictures`;
-    button.addEventListener('click', () => shareFiles(files));
-  }
+  return { html, files };
+}
+
+function wireAppLabels(box, files) {
+  box.querySelectorAll('[data-lbx-share]').forEach((b) => b.addEventListener('click', () => shareFile(files[b.dataset.lbxShare])));
+  box.querySelectorAll('[data-lbx-download]').forEach((b) => b.addEventListener('click', () => downloadFile(files[b.dataset.lbxDownload])));
 }
 
 // Ask Brick Architect which labels it has. Answers are saved on the part (and shared
 // with the family), so each label is only asked about once.
-const baCheck = { state: 'unknown', asked: new Set() }; // state: unknown | works | blocked
+// Most browsers aren't allowed to ask, so a refusal is remembered on the phone for a month.
+const BA_BLOCKED_KEY = 'brick-finder:ba-check-blocked';
+const baCheck = {
+  state: Date.now() - readLocal(BA_BLOCKED_KEY, 0) < 30 * 864e5 ? 'blocked' : 'unknown', // unknown | works | blocked
+  asked: new Set(),
+};
 async function checkLabels(parts) {
   const todo = parts.filter((p) => !p.baLabel && !baCheck.asked.has(labelNumber(p)));
   if (!todo.length || baCheck.state === 'blocked') return;
@@ -1216,6 +1246,7 @@ async function checkLabels(parts) {
     answers.forEach((has, i) => {
       if (has === null) {
         baCheck.state = 'blocked';
+        writeLocal(BA_BLOCKED_KEY, Date.now());
         return;
       }
       if (baCheck.state === 'unknown') baCheck.state = 'works';
@@ -1307,18 +1338,18 @@ function renderLabels({ params }) {
     </div>
     ${
       style === 'ba' && baCheck.state === 'blocked' && lbxParts.some((p) => !p.baLabel)
-        ? `<div class="card notice">Couldn't ask Brick Architect which labels it has from this browser. If a label won't
-            download (Brick Architect says "not found"), tap <strong>✗ Missing</strong> and the app makes one instead.</div>`
+        ? `<p class="muted no-print">Brick Architect doesn't let the app check which labels it has from this browser. If a
+            label won't download (Brick Architect says "not found"), tap <strong>✗ Missing</strong> and the app makes one instead.</p>`
         : ''
     }
     ${
       style === 'ba' && appParts.length
         ? `<div class="card">
             <h3 style="margin-top:0">App-made labels (${appParts.length})</h3>
-            <p class="muted" style="margin-top:0">Brick Architect doesn't have these. Each picture holds up to 10 labels (up to
-              28 cm of tape) and prints in one go: share it to the Brother app (or save it to Photos and add it there), print, then cut on the dashed lines.</p>
+            <p class="muted" style="margin-top:0">Brick Architect doesn't have these, so the app makes label files with the part
+              number and name. Each file holds up to 10 parts on one strip (under 28 cm), so it prints in one go: open it in the
+              Brother app, print, then cut at the | marks.</p>
             <div class="app-labels" id="app-labels"></div>
-            <div class="actions"><button class="primary" id="app-share" disabled>📤 Share</button></div>
           </div>`
         : ''
     }
@@ -1367,7 +1398,12 @@ function renderLabels({ params }) {
     renderLabels({ params });
   });
   if (style === 'ba') {
-    if (appParts.length) showAppLabels(appParts, view.querySelector('#app-labels'), view.querySelector('#app-share'));
+    if (appParts.length) {
+      const box = view.querySelector('#app-labels');
+      const { html, files } = appLabelsHtml(appParts);
+      box.innerHTML = html;
+      wireAppLabels(box, files);
+    }
     checkLabels(lbxParts);
   }
 }

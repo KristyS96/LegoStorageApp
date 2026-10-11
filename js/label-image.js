@@ -1,16 +1,12 @@
-// App-made labels for parts Brick Architect has no label for: the part number over
-// its name, drawn as a black-on-white PNG shaped for 12 mm tape. Several labels go
-// side by side on one strip, with dashed cut lines, so one print makes them all.
-import { appLabelLines, packStrips } from './labels.js';
+// A picture of app-made labels (part number over name, several side by side with
+// dashed cut lines), to preview the .lbx files the app makes (js/lbx.js).
+import { appLabelLines } from './labels.js';
 
 const HEIGHT = 160; // the Brother app scales the picture to the tape
 const PAD = 16;
 const GAP = 48; // between labels, with the cut line in the middle
 const MIN_WIDTH = HEIGHT * 2.5;
 const MAX_TEXT = HEIGHT * 6 - PAD * 2;
-// The PT-P300BT prints labels up to 300 mm long. Keep each strip under about 280 mm
-// even if the Brother app stretches the picture to the full 12 mm tape width.
-const MAX_STRIP = Math.floor((280 / 12) * HEIGHT);
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
 
 // Largest size (down to `min`) at which the text fits; shortened with "…" if it never does.
@@ -68,22 +64,4 @@ function paint(canvas, ctx, labels) {
     x += label.width + GAP;
   });
   return canvas;
-}
-
-/** PNG files for the labels: as few strips as fit, at most `perStrip` labels on each. */
-export async function labelFiles(parts, { perStrip = 10, doc = document } = {}) {
-  const ctx = doc.createElement('canvas').getContext('2d');
-  const layouts = parts.map((p) => layout(ctx, p));
-  const groups = packStrips(layouts.map((l) => l.width), { maxWidth: MAX_STRIP, gap: GAP, maxCount: perStrip }).map(
-    (idx) => idx.map((i) => parts[i]),
-  );
-  return Promise.all(
-    groups.map(async (group, i) => {
-      const blob = await new Promise((resolve) => drawStrip(group, doc).toBlob(resolve, 'image/png'));
-      const name = groups.length === 1 && group.length === 1
-        ? `label-${appLabelLines(group[0])[0] || 'part'}.png`
-        : `labels-${i + 1}-of-${groups.length}.png`;
-      return new File([blob], name.replace(/[^\w.-]+/g, '_'), { type: 'image/png' });
-    }),
-  );
 }
