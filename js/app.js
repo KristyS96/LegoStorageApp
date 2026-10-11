@@ -1198,6 +1198,7 @@ async function showAppLabels(parts, box, button) {
     .join('');
   if (button) {
     button.disabled = false;
+    if (files.length > 1) button.textContent = `📤 Share ${files.length} pictures`;
     button.addEventListener('click', () => shareFiles(files));
   }
 }
@@ -1314,10 +1315,10 @@ function renderLabels({ params }) {
       style === 'ba' && appParts.length
         ? `<div class="card">
             <h3 style="margin-top:0">App-made labels (${appParts.length})</h3>
-            <p class="muted" style="margin-top:0">Brick Architect doesn't have these. Each picture holds up to 10 labels and
-              prints in one go: share it to the Brother app (or save it to Photos and add it there), print, then cut on the dashed lines.</p>
+            <p class="muted" style="margin-top:0">Brick Architect doesn't have these. Each picture holds up to 10 labels (up to
+              28 cm of tape) and prints in one go: share it to the Brother app (or save it to Photos and add it there), print, then cut on the dashed lines.</p>
             <div class="app-labels" id="app-labels"></div>
-            <div class="actions"><button class="primary" id="app-share" disabled>📤 Share ${plural(strips(appParts).length, 'picture')}</button></div>
+            <div class="actions"><button class="primary" id="app-share" disabled>📤 Share</button></div>
           </div>`
         : ''
     }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appLabelLines, brickArchitectLabelUrl, checkBrickArchitect, labelNumber, strips } from '../js/labels.js';
+import { appLabelLines, brickArchitectLabelUrl, checkBrickArchitect, labelNumber, packStrips, strips } from '../js/labels.js';
 import { createStore, memoryBackend } from '../js/store.js';
 
 test('Brick Architect label address follows brickarchitect.com/label/<number>.lbx', () => {
@@ -69,4 +69,12 @@ test('whether Brick Architect has a label is kept with the part, until its label
   assert.equal(store.getPart('3001').baLabel, 'no');
   store.setBaLabel('3001', 'maybe');
   assert.equal(store.getPart('3001').baLabel, '');
+});
+
+test('strips stay short enough to print in one go', () => {
+  // widths 100 each, gap 10: 3 fit in 320 (100+10+100+10+100), a 4th doesn't
+  assert.deepEqual(packStrips([100, 100, 100, 100, 100], { maxWidth: 320, gap: 10 }), [[0, 1, 2], [3, 4]]);
+  assert.deepEqual(packStrips([500, 50], { maxWidth: 320, gap: 10 }), [[0], [1]], 'an extra-wide label gets its own strip');
+  assert.deepEqual(packStrips([1, 1, 1], { maxWidth: 1000, maxCount: 2 }), [[0, 1], [2]]);
+  assert.deepEqual(packStrips([], { maxWidth: 10 }), []);
 });
