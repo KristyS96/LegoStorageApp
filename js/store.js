@@ -17,6 +17,7 @@
 // The store is storage-agnostic so it runs in the browser (localStorage) and
 // in Node tests (in-memory backend).
 
+import { UNIT_KINDS, MAX_SPAN } from './data/kinds.js';
 import { lookupCatalog } from './data/catalog.js';
 import { guessCategory } from './sorting.js';
 
@@ -83,6 +84,8 @@ function normalizeUnit(input, existing = {}) {
     name: clean(input.name ?? existing.name),
     description: clean(input.description ?? existing.description),
     rows: parseRows(input.rows ?? existing.rows),
+    // Drawer cabinet, compartment case or tub (see data/kinds.js).
+    kind: UNIT_KINDS[input.kind ?? existing.kind] ? (input.kind ?? existing.kind) : 'cabinet',
   };
 }
 
@@ -100,6 +103,8 @@ function normalizeSlot(input, existing = {}) {
     needsLabel: Boolean(input.needsLabel ?? existing.needsLabel),
     // How many compartments the drawer is split into (1-8); each holds one kind of part.
     compartments: clampInt(input.compartments ?? existing.compartments ?? 1, 1, MAX_COMPARTMENTS),
+    // How many spots wide it is on the map (uneven compartments, a double-width drawer).
+    span: clampInt(input.span ?? existing.span ?? 1, 1, MAX_SPAN),
     updatedAt: input.updatedAt ?? Date.now(),
   };
 }
@@ -113,7 +118,7 @@ function clampInt(value, min, max) {
 
 // A slot worth storing: anything that differs from an untouched drawer.
 function slotHasData(s) {
-  return s.partNums.length || s.label || s.needsLabel || s.compartments > 1;
+  return s.partNums.length || s.label || s.needsLabel || s.compartments > 1 || s.span > 1;
 }
 
 function baLabelStatus(input, existing) {

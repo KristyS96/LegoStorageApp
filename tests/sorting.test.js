@@ -119,10 +119,10 @@ test('a new version of a stored part is suggested its drawer first, sharing its 
 });
 
 test('drawer sizes and the room a part needs', async () => {
-  const { drawerSize, roomNeeded, isCommon } = await import('../js/sorting.js');
-  const unit = { rows: [6, 6, 3] };
-  assert.equal(drawerSize(unit, 1), 1);
-  assert.equal(drawerSize(unit, 3), 2, 'half as many drawers in the row: twice as big');
+  const { slotSize, roomNeeded, isCommon } = await import('../js/sorting.js');
+  const unit = { id: 'u', rows: [6, 6, 3] };
+  assert.equal(slotSize(unit, 1, 1), 1);
+  assert.equal(slotSize(unit, 3, 2), 2, 'half as many drawers in the row: twice as big');
   assert.ok(isCommon({ partNum: '3023' }));
   assert.ok(isCommon({ partNum: '3069b' }), 'versions of a common part are common');
   assert.ok(!isCommon({ partNum: '3942c' }));
@@ -164,4 +164,46 @@ test('when the drawers near like parts are all too small, a roomy empty drawer i
   const { store: s2 } = cabinetWith([[2, 2, '3005']], '4, 4, 2');
   const [first] = suggestSlots({ partNum: '3004', name: 'Brick 1 x 2', category: 'Bricks' }, s2.state);
   assert.equal(first.code, 'A-3-2');
+});
+
+test('kinds of unit and uneven compartments set how much a slot holds', async () => {
+  const { slotSize, compartmentRoom } = await import('../js/sorting.js');
+  const at = (r, c, extra = {}) => ({ id: `u:${r}:${c}`, row: r, col: c, ...extra });
+  const slots = (...list) => new Map(list.map((s) => [s.id, s]));
+  // a case: a row of 4, then a row of 3 whose first compartment is double width
+  const box = { id: 'u', kind: 'case', rows: [4, 3] };
+  const wide = slots(at(2, 1, { span: 2 }));
+  assert.equal(slotSize(box, 1, 1, wide), 0.5, 'a case compartment holds about half a drawer');
+  assert.equal(slotSize(box, 2, 1, wide), 1, 'double width: twice that');
+  assert.equal(slotSize(box, 2, 2, wide), 0.5);
+  assert.equal(slotSize({ id: 'u', kind: 'tub', rows: [1] }, 1, 1), 4);
+  // compartments split cabinet drawers, but not case compartments
+  assert.equal(compartmentRoom({ id: 'u', rows: [2] }, at(1, 1, { compartments: 4 })), 0.25);
+  assert.equal(compartmentRoom(box, at(1, 1, { compartments: 4 })), 0.5);
+});
+
+test('common parts lean to cabinet drawers, a few small parts to case compartments', () => {
+  const store = createStore(memoryBackend());
+  store.addUnit({ name: 'Cabinet', rows: '2' });
+  store.addUnit({ name: 'Case', kind: 'case', rows: '4, 4' });
+  assert.equal(store.state.units[1].kind, 'case');
+  const [plate] = suggestSlots({ partNum: '3023', name: 'Plate 1 x 2', category: 'Plates' }, store.state);
+  assert.match(plate.code, /^A-/, 'a common part gets a cabinet drawer');
+  const [cone] = suggestSlots({ partNum: '4589', name: 'Cone 1 x 1', category: 'Round & Cones' }, store.state);
+  assert.match(cone.code, /^B-/, 'a few small parts get a case compartment');
+  assert.match(cone.reason, /empty compartment/);
+});
+
+test('a slot keeps its width, and unknown kinds become cabinets', () => {
+  const store = createStore(memoryBackend());
+  const unit = store.addUnit({ name: 'Case', kind: 'case', rows: '3' });
+  const id = slotId(unit.id, 1, 1);
+  store.updateSlot(id, { span: '2' });
+  assert.equal(store.getSlot(id).span, 2);
+  assert.ok(store.state.slots.some((s) => s.id === id), 'a widened empty slot is remembered');
+  store.updateSlot(id, { span: 9 });
+  assert.equal(store.getSlot(id).span, 4);
+  assert.equal(store.addUnit({ name: 'X', kind: 'shoebox', rows: '1' }).kind, 'cabinet');
+  store.updateUnit(unit.id, { kind: 'tub' });
+  assert.equal(store.getUnit(unit.id).kind, 'tub');
 });

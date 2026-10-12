@@ -1,4 +1,5 @@
 import { COMMON_PARTS } from './data/common.js';
+import { kindOf } from './data/kinds.js';
 
 // Guess one of our categories from a catalog name like "Plate 2 x 4".
 const CATEGORY_HINTS = [
@@ -109,14 +110,25 @@ export function compartmentsUsed(parts) {
 
 // ---------- Room: drawer size vs. how much a part needs ----------
 //
-// Sizes are in "small drawers": the smallest drawers of a unit are 1. In a cabinet
-// whose rows are 6, 6, 6, 3, 3 the 3-wide drawers are twice as wide, so 2. A drawer
-// split into 8 compartments has 1/8 of its size in each.
+// Sizes are in "small drawers": the smallest drawers of a cabinet are 1. In a cabinet
+// whose rows are 6, 6, 6, 3, 3 the 3-wide drawers are twice as wide, so 2. A slot set
+// to span 2 spots is twice as wide as its neighbours. A compartment case's slots hold
+// about half a drawer, a tub about 4 (data/kinds.js). A drawer split into 8
+// compartments has 1/8 of its size in each.
 
-/** Size of the drawers in one row of a unit. */
-export function drawerSize(unit, row) {
-  const cols = unit.rows[row - 1] || 1;
-  return Math.max(...unit.rows) / cols;
+const spanOf = (slots, unit, row, col) => slots?.get(`${unit.id}:${row}:${col}`)?.span ?? 1;
+
+/** How much one slot holds, in small drawers. `slots` maps slot id -> slot (for spans). */
+export function slotSize(unit, row, col, slots) {
+  const width = (r) => Array.from({ length: unit.rows[r - 1] || 1 }, (_, c) => spanOf(slots, unit, r, c + 1)).reduce((a, b) => a + b, 0);
+  const widest = Math.max(...unit.rows.map((_, i) => width(i + 1)));
+  return (kindOf(unit).size * widest * spanOf(slots, unit, row, col)) / width(row);
+}
+
+/** Room for one kind of part: the slot's size, split among its compartments if it can be. */
+export function compartmentRoom(unit, slot, slots) {
+  const parts = kindOf(unit).split ? (slot?.compartments ?? 1) : 1;
+  return slotSize(unit, slot.row, slot.col, slots) / parts;
 }
 
 /** Is this a part most collections have lots of? */
@@ -141,13 +153,13 @@ export function roomNeeded(part) {
 
 // How well `room` suits a part needing `need`: too small is bad, a lot of room for a
 // few pieces is a waste, about right gets a small bonus. Returns [score, note].
-function fit(room, need, common) {
+function fit(room, need, common, word = 'drawer') {
   const ratio = room / need;
   if (ratio < 0.5) return [-3, common ? 'small for a common part' : 'may be small'];
   if (ratio < 1) return [-1, common ? 'a bit small for a common part' : 'may be a little small'];
   if (ratio > 4) return [-1, ''];
   // Common parts keep coming, so room to grow is a plus; for a few pieces, snug is better.
-  if (common) return ratio >= 1.5 ? [1, room >= 1.5 ? 'big drawer, good for a common part' : ''] : [0.5, ''];
+  if (common) return ratio >= 1.5 ? [1, room >= 1.5 ? `big ${word}, good for a common part` : ''] : [0.5, ''];
   return [ratio <= 2 ? 0.5 : 0, ''];
 }
 
@@ -208,10 +220,11 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
         if (withVersion.has(id)) continue;
         if (!contents.length && slot?.label) continue; // named compartment ("Hinges"): contents not listed
         if (contents.length) {
-          const free = (slot?.compartments ?? 1) - compartmentsUsed(contents);
+          const kind = kindOf(unit);
+          const free = (kind.split ? (slot?.compartments ?? 1) : 1) - compartmentsUsed(contents);
           const match = best(contents);
           if (free > 0 && match.score >= LIKE) {
-            const [bonus, note] = fit(drawerSize(unit, r + 1) / (slot?.compartments ?? 1), need, common);
+            const [bonus, note] = fit(compartmentRoom(unit, slot, stored), need, common, kind.slot);
             out.push({
               slotId: id, code, kind: 'share', score: match.score + 1 + bonus, fits: bonus >= 0,
               reason: withNote(`${free} free compartment${free === 1 ? '' : 's'}, with ${label(match.part)}`, note),
@@ -225,8 +238,9 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
           .map(([nr, nc]) => ({ code: `${unit.code}-${nr + 1}-${nc + 1}`, match: best(contentsOf(`${unit.id}:${nr + 1}:${nc + 1}`)) }))
           .sort((a, b) => b.match.score - a.match.score)[0];
         // An empty drawer can still be split, so a small part is only "wasting" it a little.
-        const room = drawerSize(unit, r + 1) / (slot?.compartments ?? 1);
-        const [bonus, note] = fit(room, need, common);
+        const word = kindOf(unit).slot;
+        const room = compartmentRoom(unit, slot ?? { row: r + 1, col: c + 1, compartments: 1 }, stored);
+        const [bonus, note] = fit(room, need, common, word);
         if (around && around.match.score >= LIKE) {
           out.push({
             slotId: id, code, kind: 'beside', score: around.match.score - 0.5 + bonus, fits: bonus >= 0,
@@ -235,7 +249,7 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
         }
         // The best-fitting empty drawer anywhere, in case nothing alike has room.
         if (!fallback || bonus > fallback.score) {
-          fallback = { slotId: id, code, kind: 'empty', score: bonus, fits: bonus >= 0, reason: withNote('empty drawer', note) };
+          fallback = { slotId: id, code, kind: 'empty', score: bonus, fits: bonus >= 0, reason: withNote(`empty ${word}`, note) };
         }
       }
     });
