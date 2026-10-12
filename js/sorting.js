@@ -1,3 +1,5 @@
+import { COMMON_PARTS } from './data/common.js';
+
 // Guess one of our categories from a catalog name like "Plate 2 x 4".
 const CATEGORY_HINTS = [
   [/\btechnic\b|\baxle\b|\bpin\b|\bliftarm\b|\bgear\b/, 'Technic'],
@@ -105,12 +107,57 @@ export function compartmentsUsed(parts) {
   return groups.length;
 }
 
+// ---------- Room: drawer size vs. how much a part needs ----------
+//
+// Sizes are in "small drawers": the smallest drawers of a unit are 1. In a cabinet
+// whose rows are 6, 6, 6, 3, 3 the 3-wide drawers are twice as wide, so 2. A drawer
+// split into 8 compartments has 1/8 of its size in each.
+
+/** Size of the drawers in one row of a unit. */
+export function drawerSize(unit, row) {
+  const cols = unit.rows[row - 1] || 1;
+  return Math.max(...unit.rows) / cols;
+}
+
+/** Is this a part most collections have lots of? */
+export function isCommon(part) {
+  return [part.partNum, ...(part.altNums ?? [])].some((n) => COMMON_PARTS.has(baseNumber(n)));
+}
+
+/**
+ * Room a part needs, in small drawers: a little for a small part you have a few of,
+ * a whole drawer (or more) for a common one. Bulk comes from its size in the name.
+ */
+export function roomNeeded(part) {
+  const { type, dims } = partShape(part.name);
+  let base = 0.5; // no size in the name: a medium part
+  if (dims.length >= 2) {
+    const tall = type === 'brick' || dims[2] > 1 ? Math.max(dims[2] ?? 3, 3) : 1;
+    const bulk = dims[0] * dims[1] * tall; // in 1 x 1 plates
+    base = bulk <= 4 ? 0.25 : bulk <= 16 ? 0.5 : 1;
+  }
+  return isCommon(part) ? Math.min(base * 4, 2) : base;
+}
+
+// How well `room` suits a part needing `need`: too small is bad, a lot of room for a
+// few pieces is a waste, about right gets a small bonus. Returns [score, note].
+function fit(room, need, common) {
+  const ratio = room / need;
+  if (ratio < 0.5) return [-3, common ? 'small for a common part' : 'may be small'];
+  if (ratio < 1) return [-1, common ? 'a bit small for a common part' : 'may be a little small'];
+  if (ratio > 4) return [-1, ''];
+  // Common parts keep coming, so room to grow is a plus; for a few pieces, snug is better.
+  if (common) return ratio >= 1.5 ? [1, room >= 1.5 ? 'big drawer, good for a common part' : ''] : [0.5, ''];
+  return [ratio <= 2 ? 0.5 : 0, ''];
+}
+
 const LIKE = 6; // similarity at which parts count as "like pieces" (e.g. any two plain tiles)
 
 /**
  * Suggest slots for a part that needs a home.
  * @param part { partNum, name, category }
  * @param catalog { units, slots, parts } from the store
+ * Drawer size counts too: common parts lean to big drawers, a few small parts to compartments.
  * @returns [{ slotId, code, kind: 'version' | 'share' | 'beside' | 'empty', reason, score, versionOf? }] best first
  */
 export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) {
@@ -127,6 +174,9 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
       return score > top.score ? { score, part: p } : top;
     }, { score: -1, part: null });
   const label = (p) => p.name || `#${p.partNum}`;
+  const need = roomNeeded(part);
+  const common = isCommon(part);
+  const withNote = (reason, note) => (note ? `${reason} · ${note}` : reason);
 
   const out = [];
   let fallback = null;
@@ -161,9 +211,10 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
           const free = (slot?.compartments ?? 1) - compartmentsUsed(contents);
           const match = best(contents);
           if (free > 0 && match.score >= LIKE) {
+            const [bonus, note] = fit(drawerSize(unit, r + 1) / (slot?.compartments ?? 1), need, common);
             out.push({
-              slotId: id, code, kind: 'share', score: match.score + 1,
-              reason: `${free} free compartment${free === 1 ? '' : 's'}, with ${label(match.part)}`,
+              slotId: id, code, kind: 'share', score: match.score + 1 + bonus, fits: bonus >= 0,
+              reason: withNote(`${free} free compartment${free === 1 ? '' : 's'}, with ${label(match.part)}`, note),
             });
           }
           continue;
@@ -173,19 +224,29 @@ export function suggestSlots(part, { units, slots, parts }, { limit = 3 } = {}) 
           .filter(([nr, nc]) => nr >= 0 && nr < unit.rows.length && nc >= 0 && nc < unit.rows[nr])
           .map(([nr, nc]) => ({ code: `${unit.code}-${nr + 1}-${nc + 1}`, match: best(contentsOf(`${unit.id}:${nr + 1}:${nc + 1}`)) }))
           .sort((a, b) => b.match.score - a.match.score)[0];
+        // An empty drawer can still be split, so a small part is only "wasting" it a little.
+        const room = drawerSize(unit, r + 1) / (slot?.compartments ?? 1);
+        const [bonus, note] = fit(room, need, common);
         if (around && around.match.score >= LIKE) {
           out.push({
-            slotId: id, code, kind: 'beside', score: around.match.score - 0.5,
-            reason: `empty, next to ${around.code} (${label(around.match.part)})`,
+            slotId: id, code, kind: 'beside', score: around.match.score - 0.5 + bonus, fits: bonus >= 0,
+            reason: withNote(`empty, next to ${around.code} (${label(around.match.part)})`, note),
           });
-        } else if (!fallback) {
-          fallback = { slotId: id, code, kind: 'empty', score: 0, reason: 'empty drawer' };
+        }
+        // The best-fitting empty drawer anywhere, in case nothing alike has room.
+        if (!fallback || bonus > fallback.score) {
+          fallback = { slotId: id, code, kind: 'empty', score: bonus, fits: bonus >= 0, reason: withNote('empty drawer', note) };
         }
       }
     });
   }
   out.sort((a, b) => b.score - a.score || a.code.localeCompare(b.code, undefined, { numeric: true }));
   const picks = out.slice(0, limit);
-  if (picks.length < limit && fallback) picks.push(fallback);
+  const offered = (f) => picks.some((p) => p.slotId === f.slotId);
+  if (fallback && !offered(fallback)) {
+    if (picks.length < limit) picks.push(fallback);
+    // None of the drawers near like parts has room for it: offer the one that does.
+    else if (fallback.fits && !picks.some((p) => p.fits)) picks[limit - 1] = fallback;
+  }
   return picks;
 }
