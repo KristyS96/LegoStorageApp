@@ -121,6 +121,10 @@ numbers are never shown or saved.
 
 ## Part names
 
+Pictures: a part without one of its own shows BrickLink's catalog picture for its number (the large one, else the part in
+black, white or grey), and a brick when BrickLink has none. **Settings → Fill in names and pictures** saves Rebrickable's
+names and pictures for every part missing either (Rebrickable key needed; about one lookup a second).
+
 `js/data/catalog.js` has built-in names for common bricks, plates and tiles. It also includes the parts on the family's Brick Architect drawer labels, so typing a number fills in the name even offline.
 For other parts, type the name yourself or look the part up in **Identify** (Rebrickable key needed for number/name lookups).
 To add more built-in names, add lines to `catalog.js`.
