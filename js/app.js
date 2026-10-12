@@ -8,6 +8,7 @@ import { drawStrip } from './label-image.js';
 import { appPiece, lbxPiece, lbxStrips, makeStrips } from './lbx.js';
 import { fetchSet, normalizeSetNum, planBuild } from './sets.js';
 import { storageReport } from './report.js';
+import { UNIT_KINDS, kindOf, MAX_SPAN } from './data/kinds.js';
 import { CATEGORIES } from './data/categories.js';
 import { CATALOG, lookupCatalog } from './data/catalog.js';
 import { SAMPLE } from './data/sample.js';
@@ -124,17 +125,18 @@ function cellText(slot) {
 
 /** Visual map of a storage unit; highlighted slots stand out (e.g. search hits). */
 function unitMap(unit, { highlight = new Set(), compact = false } = {}) {
+  const { split } = kindOf(unit);
   return `<div class="unit-map ${compact ? 'compact' : ''}">
     ${unit.rows
       .map(
-        (cols, r) => `<div class="map-row" style="grid-template-columns:repeat(${cols},1fr)">
+        (cols, r) => `<div class="map-row" style="grid-template-columns:${Array.from({ length: cols }, (_, c) => `${store.getSlot(slotId(unit.id, r + 1, c + 1))?.span ?? 1}fr`).join(' ')}">
         ${Array.from({ length: cols }, (_, c) => {
           const slot = store.getSlot(slotId(unit.id, r + 1, c + 1));
           const text = cellText(slot);
           const cls = [text ? 'filled' : '', highlight.has(slot.id) ? 'hit' : ''].join(' ');
           return `<a class="cell ${cls}" href="${slotHref(slot.id)}" title="${esc(`${slotCode(unit, r + 1, c + 1)} ${text}`)}">
             <span class="code">${r + 1}-${c + 1}${
-              !compact && slot.compartments > 1 ? `<span class="fill">${slotFill(slot)}/${slot.compartments}</span>` : ''
+              !compact && split && slot.compartments > 1 ? `<span class="fill">${slotFill(slot)}/${slot.compartments}</span>` : ''
             }</span>${compact ? '' : `<span class="cell-text">${esc(text)}</span>`}</a>`;
         }).join('')}
       </div>`,
@@ -504,10 +506,18 @@ function renderPart({ id: num, params }) {
 
 // ---------- Storage ----------
 
+function kindSelect(current = 'cabinet') {
+  return `<label for="u-kind">Kind</label>
+    <select id="u-kind" name="kind">${Object.entries(UNIT_KINDS)
+      .map(([k, v]) => `<option value="${k}" ${k === current ? 'selected' : ''}>${esc(v.label)}</option>`)
+      .join('')}</select>`;
+}
+
 const PRESETS = [
-  { label: 'Drawer cabinet (5 rows of 6, 3 rows of 3)', rows: '6, 6, 6, 6, 6, 3, 3, 3' },
-  { label: 'Divided case (6 × 6)', rows: '6, 6, 6, 6, 6, 6' },
-  { label: 'Case with 8 compartments', rows: '2, 2, 2, 2' },
+  { label: 'Drawer cabinet (5 rows of 6, 3 rows of 3)', rows: '6, 6, 6, 6, 6, 3, 3, 3', kind: 'cabinet' },
+  { label: 'Divided case (6 × 6)', rows: '6, 6, 6, 6, 6, 6', kind: 'case' },
+  { label: 'Case with 8 compartments', rows: '2, 2, 2, 2', kind: 'case' },
+  { label: 'One tub', rows: '1', kind: 'tub' },
 ];
 
 function renderStorage() {
@@ -545,10 +555,12 @@ function renderStorage() {
           <input id="u-code" name="code" placeholder="${esc(store.nextUnitCode())}" maxlength="3" />
         </div>
       </div>
+      ${kindSelect()}
       <label for="u-rows">Drawers or compartments in each row, top to bottom</label>
       <input id="u-rows" name="rows" placeholder="e.g. 6, 6, 6, 6, 6, 3, 3, 3" required />
+      <p class="muted" style="margin:4px 0 0">Uneven compartments? Count each one, then set its width on its own page.</p>
       <div class="chips wrap">
-        ${PRESETS.map((pr) => `<button type="button" class="chip" data-rows="${esc(pr.rows)}">${esc(pr.label)}</button>`).join('')}
+        ${PRESETS.map((pr) => `<button type="button" class="chip" data-rows="${esc(pr.rows)}" data-kind="${pr.kind}">${esc(pr.label)}</button>`).join('')}
       </div>
       <label for="u-desc">Where is it? (optional)</label>
       <input id="u-desc" name="description" placeholder="e.g. Playroom, left wall" />
@@ -566,7 +578,9 @@ function renderStorage() {
   const form = view.querySelector('#unit-form');
   form.addEventListener('click', (e) => {
     const preset = e.target.closest('[data-rows]');
-    if (preset) form.elements.rows.value = preset.dataset.rows;
+    if (!preset) return;
+    form.elements.rows.value = preset.dataset.rows;
+    form.elements.kind.value = preset.dataset.kind;
   });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -595,8 +609,10 @@ function renderUnit({ id }) {
         <div><label for="u-name">Name</label><input id="u-name" name="name" value="${esc(unit.name)}" required /></div>
         <div><label for="u-code">Code</label><input id="u-code" name="code" value="${esc(unit.code)}" maxlength="3" required /></div>
       </div>
+      ${kindSelect(unit.kind)}
       <label for="u-rows">Drawers or compartments in each row, top to bottom</label>
       <input id="u-rows" name="rows" value="${esc(unit.rows.join(', '))}" required />
+      <p class="muted" style="margin:4px 0 0">Uneven compartments? Tap one on the map to set its width.</p>
       <label for="u-desc">Where is it?</label>
       <input id="u-desc" name="description" value="${esc(unit.description)}" />
       <div class="actions">
@@ -647,6 +663,7 @@ function renderScan() {
           <input id="s-code" name="code" placeholder="${esc(store.nextUnitCode())}" maxlength="3" />
         </div>
       </div>
+      ${kindSelect().replace(/u-kind/g, 's-kind')}
       <label for="s-desc">Where is it? (optional)</label>
       <input id="s-desc" name="description" placeholder="e.g. Garage, back wall" />
       <label class="photo-drop" for="s-photo" style="margin-top:14px">
@@ -852,6 +869,7 @@ function renderSlot({ id }) {
     return;
   }
   const { prev, next } = neighborSlots(unit, slot);
+  const kind = kindOf(unit);
   const parts = slot.partNums.map((n) => store.getPart(n) ?? { partNum: n, altNums: [], name: '', imageUrl: '' });
 
   view.innerHTML = `
@@ -862,9 +880,9 @@ function renderSlot({ id }) {
     </div>
     <h2 class="slot-title">📦 ${esc(store.codeOf(slot))}</h2>
     ${
-      slot.compartments > 1
+      kind.split && slot.compartments > 1
         ? `<p class="muted">${slotFill(slot)} of ${slot.compartments} compartments used</p>`
-        : ''
+        : `<p class="muted">${esc(kind.label)} · ${esc(kind.slot)}</p>`
     }
 
     <div class="card" style="padding:0">
@@ -885,7 +903,7 @@ function renderSlot({ id }) {
                   </li>`,
                 )
                 .join('')
-            : '<li class="empty">Empty. Add the part numbers on this drawer\'s label below.</li>'
+            : `<li class="empty">Empty. Add the part numbers on this ${esc(kind.slot)}'s label below.</li>`
         }
       </ul>
     </div>
@@ -908,10 +926,20 @@ function renderSlot({ id }) {
     <form id="slot-form" class="card">
       <label for="label" style="margin-top:0">Slot name (optional)</label>
       <input id="label" name="label" value="${esc(slot.label)}" placeholder="e.g. Hinges, or Clips & bars" />
-      <label for="compartments">Compartments in this drawer</label>
-      <select id="compartments" name="compartments">
-        ${Array.from({ length: MAX_COMPARTMENTS }, (_, i) => i + 1)
-          .map((n) => `<option value="${n}" ${slot.compartments === n ? 'selected' : ''}>${n === 1 ? '1 (not divided)' : n}</option>`)
+      ${
+        kind.split
+          ? `<label for="compartments">Compartments in this ${esc(kind.slot)}</label>
+            <select id="compartments" name="compartments">
+              ${Array.from({ length: MAX_COMPARTMENTS }, (_, i) => i + 1)
+                .map((n) => `<option value="${n}" ${slot.compartments === n ? 'selected' : ''}>${n === 1 ? '1 (not divided)' : n}</option>`)
+                .join('')}
+            </select>`
+          : ''
+      }
+      <label for="span">Width</label>
+      <select id="span" name="span">
+        ${Array.from({ length: MAX_SPAN }, (_, i) => i + 1)
+          .map((n) => `<option value="${n}" ${slot.span === n ? 'selected' : ''}>${n === 1 ? 'Normal' : `${n} spots wide`}</option>`)
           .join('')}
       </select>
       <label class="check"><input type="checkbox" name="needsLabel" ${slot.needsLabel ? 'checked' : ''} /> Needs a printed label</label>
@@ -988,7 +1016,12 @@ function renderSlot({ id }) {
   view.querySelector('#slot-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    store.updateSlot(slot.id, { label: fd.get('label'), compartments: fd.get('compartments'), needsLabel: fd.has('needsLabel') });
+    store.updateSlot(slot.id, {
+      label: fd.get('label'),
+      ...(fd.has('compartments') ? { compartments: fd.get('compartments') } : {}),
+      span: fd.get('span'),
+      needsLabel: fd.has('needsLabel'),
+    });
     toast('Saved');
     renderSlot({ id });
   });

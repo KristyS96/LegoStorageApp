@@ -7,8 +7,9 @@ No build step and no account needed. It's plain HTML/CSS/JavaScript (ES modules)
 
 ## How storage is described
 
-- **Storage unit:** a drawer cabinet, a divided case or a tub with compartments. Each unit has a letter code (`A`, `B`, …) and a layout: the number of drawers or compartments in each row, top to bottom. A cabinet with 5 rows of 6 small drawers and 3 rows of 3 large ones is `6, 6, 6, 6, 6, 3, 3, 3`.
+- **Storage unit:** a drawer cabinet, a compartment case or a tub, set as its **Kind**. A case's compartments each hold about half a small cabinet drawer and can't be split further; a tub holds about four drawers' worth. Suggestions compare room across units with this. Each unit has a letter code (`A`, `B`, …) and a layout: the number of drawers or compartments in each row, top to bottom. A cabinet with 5 rows of 6 small drawers and 3 rows of 3 large ones is `6, 6, 6, 6, 6, 3, 3, 3`.
 - **Slot:** one drawer or compartment, named **unit-row-column**. `A-7-1` is cabinet A, row 7, first drawer. A slot holds one or more part numbers, with all colors mixed. A slot can also have a name such as "Hinges" for mixed compartments.
+- **Width:** a slot can be 2–4 spots wide (a case with uneven compartments, a double-width drawer), set on its page and changed whenever the dividers move. The map draws it that wide.
 - **Compartments:** a drawer can be divided into up to 8 compartments, each holding one kind of part. The map shows how
   full a divided drawer is (e.g. `3/8`).
 - **Part:** a part number, any alternate numbers for the same part (e.g. `15573 / 3794`), a name and a kind (Plates, Tiles…). A part can live in more than one slot, for example when a drawer overflows.
