@@ -45,10 +45,14 @@ test('suggests a split drawer with free room that holds like pieces', () => {
     [1, 2, '3069, 63864', 8], // tiles, 8 compartments: 6 free
     [2, 1, '3023', 8], // Plate 1 x 2: unlike a tile
   ]);
-  const [first] = suggestSlots({ partNum: '2431', name: 'Tile 1 x 4', category: 'Tiles' }, store.state);
+  // a tile you'd have a few of (not on the common list) fits a compartment
+  const [first] = suggestSlots({ partNum: '90001', name: 'Tile 1 x 4 with Pin', category: 'Tiles' }, store.state);
   assert.equal(first.code, 'A-1-2');
   assert.equal(first.kind, 'share');
   assert.match(first.reason, /6 free compartments, with Tile 1 x [23]/);
+  // a common one (lots of pieces) gets a drawer of its own next to the tiles instead
+  const [common] = suggestSlots({ partNum: '2431', name: 'Tile 1 x 4', category: 'Tiles' }, store.state);
+  assert.equal(common.kind, 'beside');
 });
 
 test('full drawers are skipped; an empty drawer beside like pieces is next best', () => {
@@ -112,4 +116,52 @@ test('a new version of a stored part is suggested its drawer first, sharing its 
   store.addPartsToSlot(slotId(unit.id, 1, 1), '3942c');
   const parts = store.getSlot(slotId(unit.id, 1, 1)).partNums.map((n) => store.getPart(n));
   assert.equal(compartmentsUsed(parts), 2);
+});
+
+test('drawer sizes and the room a part needs', async () => {
+  const { drawerSize, roomNeeded, isCommon } = await import('../js/sorting.js');
+  const unit = { rows: [6, 6, 3] };
+  assert.equal(drawerSize(unit, 1), 1);
+  assert.equal(drawerSize(unit, 3), 2, 'half as many drawers in the row: twice as big');
+  assert.ok(isCommon({ partNum: '3023' }));
+  assert.ok(isCommon({ partNum: '3069b' }), 'versions of a common part are common');
+  assert.ok(!isCommon({ partNum: '3942c' }));
+  assert.equal(roomNeeded({ partNum: '3023', name: 'Plate 1 x 2' }), 1, 'common small part: a whole small drawer');
+  assert.equal(roomNeeded({ partNum: '90002', name: 'Tile 1 x 1 Round with Hole' }), 0.25, 'a few small parts: a compartment');
+  assert.equal(roomNeeded({ partNum: '3001', name: 'Brick 2 x 4' }), 2, 'common and bulky: a big drawer');
+  assert.equal(roomNeeded({ partNum: '3958', name: 'Plate 6 x 6' }), 2);
+  assert.equal(roomNeeded({ partNum: '90003', name: 'Plate 6 x 6 with Holes' }), 1, 'big but rare');
+  assert.equal(roomNeeded({ partNum: '90004', name: 'Minifig, Visor' }), 0.5, 'no size: medium');
+});
+
+test('a common part is offered a big drawer, a rare small part a small one', () => {
+  // rows of 4 small drawers and one row of 2 big ones; nothing alike stored
+  const { store } = cabinetWith([[1, 1, '3001']], '4, 2');
+  const [plate] = suggestSlots({ partNum: '3023', name: 'Plate 1 x 2', category: 'Plates' }, store.state);
+  assert.equal(plate.code, 'A-2-1');
+  assert.match(plate.reason, /big drawer, good for a common part/);
+  const [cone] = suggestSlots({ partNum: '4589', name: 'Cone 1 x 1', category: 'Round & Cones' }, store.state);
+  assert.equal(cone.code, 'A-1-2', 'a small drawer for a few small parts');
+});
+
+test('a common part is steered away from a tiny compartment among like parts', () => {
+  const { store } = cabinetWith([[1, 1, '3024', 8]], '4, 2'); // plates 1x1, split in 8
+  const picks = suggestSlots({ partNum: '3023', name: 'Plate 1 x 2', category: 'Plates' }, store.state);
+  assert.equal(picks[0].kind, 'beside', 'a drawer of its own next to the 1x1 plates');
+  const share = picks.find((p) => p.kind === 'share');
+  if (share) assert.match(share.reason, /small for a common part/);
+});
+
+test('when the drawers near like parts are all too small, a roomy empty drawer is offered too', () => {
+  // 1x1 bricks in the small top drawers; the big drawers in row 4 are empty and not next to them
+  const { store } = cabinetWith([[1, 1, '3005'], [1, 3, '3005']], '4, 4, 4, 2');
+  const picks = suggestSlots({ partNum: '3004', name: 'Brick 1 x 2', category: 'Bricks' }, store.state);
+  assert.equal(picks.length, 3);
+  assert.ok(picks.slice(0, 2).every((p) => p.kind === 'beside' && /small for a common part/.test(p.reason)));
+  assert.equal(picks[2].kind, 'empty');
+  assert.match(picks[2].code, /^A-4-/);
+  // and a big drawer right next to like parts comes first
+  const { store: s2 } = cabinetWith([[2, 2, '3005']], '4, 4, 2');
+  const [first] = suggestSlots({ partNum: '3004', name: 'Brick 1 x 2', category: 'Bricks' }, s2.state);
+  assert.equal(first.code, 'A-3-2');
 });
