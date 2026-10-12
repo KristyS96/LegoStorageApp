@@ -1,6 +1,6 @@
 import { createStore, normNum, parseNums, parseRows, slotId, slotCode, MAX_COMPARTMENTS } from './store.js';
 import { searchParts } from './search.js';
-import { identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
+import { brickLinkImages, identifyFromPhoto, lookupPart, partByNumber } from './identify.js';
 import { compartmentsUsed, guessCategory, suggestSlots } from './sorting.js';
 import { cellToText, prepareImage, scanUnit, textToParts } from './scan.js';
 import { brickArchitectLabelUrl, checkBrickArchitect, fetchLabelFile, labelNumber, strips } from './labels.js';
@@ -55,11 +55,29 @@ function slotsBadges(partNum) {
   return slots.length ? slots.map(slotBadge).join(' ') : '<span class="slot-badge none">No slot yet</span>';
 }
 
-function thumb(url) {
-  return url
-    ? `<img class="thumb" src="${esc(url)}" alt="" loading="lazy" />`
-    : '<div class="thumb" aria-hidden="true">🧱</div>';
+// A part's picture: its own, else BrickLink's catalog pictures in turn, else a brick.
+function thumb(url, partNum = '') {
+  const sources = [url, ...brickLinkImages(partNum)].filter(Boolean);
+  if (!sources.length) return '<div class="thumb" aria-hidden="true">🧱</div>';
+  return `<img class="thumb" src="${esc(sources[0])}" data-next="${esc(sources.slice(1).join(' '))}" alt="" loading="lazy" />`;
 }
+
+// A picture that doesn't load moves on to the next one (errors don't bubble, so capture).
+document.addEventListener(
+  'error',
+  (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.classList.contains('thumb')) return;
+    const [next, ...rest] = (img.dataset.next ?? '').split(' ').filter(Boolean);
+    if (next) {
+      img.dataset.next = rest.join(' ');
+      img.src = next;
+    } else {
+      img.replaceWith(Object.assign(document.createElement('div'), { className: 'thumb', textContent: '🧱' }));
+    }
+  },
+  true,
+);
 
 function baLabelLink(part, text = '🏷️ Label') {
   const url = brickArchitectLabelUrl(part);
@@ -158,7 +176,7 @@ function partRow(part) {
   return `
     <li class="part">
       <a class="part-link" href="${partHref(part.partNum)}">
-        ${thumb(part.imageUrl)}
+        ${thumb(part.imageUrl, part.partNum)}
         <div>
           <div class="part-title">${esc(part.name || 'Unnamed part')}</div>
           <div class="part-meta"><span>${esc(numsText(part))}</span></div>
@@ -255,7 +273,7 @@ function resultCard(r) {
   const qs = new URLSearchParams({ name: r.name, img: r.imageUrl });
   return `
     <div class="result">
-      ${thumb(r.imageUrl)}
+      ${thumb(r.imageUrl, r.partNum)}
       <div>
         <div class="part-title">${esc(mine?.name || r.name)}</div>
         <div class="part-meta">
@@ -364,7 +382,7 @@ function renderPart({ id: num, params }) {
   view.innerHTML = `
     <form id="part-form" class="card">
       <div class="row" style="align-items:center;flex-wrap:nowrap">
-        <div style="flex:0 0 auto">${thumb(p.imageUrl)}</div>
+        <div style="flex:0 0 auto">${thumb(p.imageUrl, p.partNum)}</div>
         <div>
           <h2 style="margin:0">${esc(p.name || 'New part')}</h2>
           <div class="muted">#${esc(p.partNum)}${existing ? '' : ' · not in your catalog yet'}</div>
@@ -835,15 +853,16 @@ function renderScanReview(unitInput, image, scan) {
  * Look up names (and pictures) for parts that have none. Returns how many were named,
  * or null when there's no Rebrickable key to look them up with.
  */
-async function fillNamesOnline(parts, onProgress = () => {}) {
+async function fillNamesOnline(parts, onProgress = () => {}, { pace = 0 } = {}) {
   const key = store.state.settings.rebrickableKey;
   if (!key) return null;
   let named = 0;
   for (const [i, part] of parts.entries()) {
     onProgress(i + 1, parts.length);
+    if (i && pace) await new Promise((r) => setTimeout(r, pace)); // Rebrickable allows about one lookup a second
     for (const num of [part.partNum, ...part.altNums]) {
-      const found = await partByNumber(num, key); // stops on a bad key or network error
-      if (found?.name) {
+      const found = await lookupPaced(num, key, pace); // stops on a bad key or network error
+      if (found?.name || found?.imageUrl) {
         store.fillPartDetails(part.partNum, found);
         named += 1;
         break;
@@ -851,6 +870,17 @@ async function fillNamesOnline(parts, onProgress = () => {}) {
     }
   }
   return named;
+}
+
+// partByNumber, waiting and trying again once if Rebrickable says "too many requests".
+async function lookupPaced(num, key, pace) {
+  try {
+    return await partByNumber(num, key);
+  } catch (err) {
+    if (!pace || !/\(429\)/.test(err.message)) throw err;
+    await new Promise((r) => setTimeout(r, 5000));
+    return partByNumber(num, key);
+  }
 }
 
 // ---------- Slot ----------
@@ -892,7 +922,7 @@ function renderSlot({ id }) {
             ? parts
                 .map(
                   (p) => `<li class="part">
-                    <a class="part-link" href="${partHref(p.partNum)}">${thumb(p.imageUrl)}
+                    <a class="part-link" href="${partHref(p.partNum)}">${thumb(p.imageUrl, p.partNum)}
                       <div><div class="part-title">${esc(p.name || 'Unnamed part')}</div>
                       <div class="part-meta"><span>${esc(numsText(p))}</span></div></div></a>
                     <div class="part-slots">
@@ -991,7 +1021,7 @@ function renderSlot({ id }) {
       photoOut.innerHTML = matches.length
         ? `<p class="muted">Tap the right one to add it here:</p><ul class="suggestions">${matches
             .map(
-              (m, i) => `<li><button type="button" class="suggestion" data-match="${i}">${thumb(m.imageUrl)}
+              (m, i) => `<li><button type="button" class="suggestion" data-match="${i}">${thumb(m.imageUrl, m.partNum)}
                 <span><strong>${esc(m.name)}</strong><br><span class="muted">#${esc(m.partNum)}${
                   m.score != null ? ` · ${Math.round(m.score * 100)}% match` : ''
                 }</span></span></button></li>`,
@@ -1132,7 +1162,7 @@ function drawBuild(set) {
 
   const lineHtml = (l) => `<li class="part build-line ${ticks.has(l.key) ? 'done' : ''}">
       <label class="part-link">
-        ${thumb(l.imageUrl)}
+        ${thumb(l.imageUrl, l.partNum)}
         <div>
           <div class="part-title">${l.quantity}× ${esc(l.name)}</div>
           <div class="part-meta">
@@ -1861,9 +1891,12 @@ function renderSettings() {
       <input id="rbKey" name="rebrickableKey" value="${esc(store.state.settings.rebrickableKey)}" autocomplete="off" />
       ${(() => {
         const unnamed = store.state.parts.filter((p) => !p.name).length;
-        return unnamed
-          ? `<p class="muted" style="margin-bottom:0">${unnamed} part${unnamed === 1 ? ' has' : 's have'} no name yet.
-              <button type="button" class="small" id="fill-names" ${store.state.settings.rebrickableKey ? '' : 'disabled'}>Look up missing names</button></p>`
+        const unpictured = store.state.parts.filter((p) => !p.imageUrl).length;
+        const missing = [unnamed && `${unnamed} without a name`, unpictured && `${unpictured} without a saved picture`].filter(Boolean);
+        return missing.length
+          ? `<p class="muted" style="margin-bottom:0">Parts ${missing.join(' and ')}.
+              <button type="button" class="small" id="fill-names" ${store.state.settings.rebrickableKey ? '' : 'disabled'}>Fill in names and pictures</button>
+              <br />Until then, BrickLink's catalog picture is shown where there is one.</p>`
           : '';
       })()}
       <h3>Reading cabinets from photos</h3>
@@ -1903,14 +1936,15 @@ function renderSettings() {
     e.target.disabled = true;
     try {
       const named = await fillNamesOnline(
-        store.state.parts.filter((p) => !p.name),
+        store.state.parts.filter((p) => !p.name || !p.imageUrl),
         (i, n) => (e.target.textContent = `Looking up ${i} of ${n}…`),
+        { pace: 1100 },
       );
-      toast(`Named ${named} part${named === 1 ? '' : 's'}`);
+      toast(`Filled in ${named} part${named === 1 ? '' : 's'}`);
     } catch (err) {
       toast(err.message);
     }
-    renderSettings();
+    if (parseRoute().name === 'settings') renderSettings();
   });
   view.querySelector('#settings-form').addEventListener('submit', (e) => {
     e.preventDefault();

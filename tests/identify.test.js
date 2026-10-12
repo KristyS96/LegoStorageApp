@@ -53,3 +53,15 @@ test('name searches show BrickLink numbers, without duplicates or Rebrickable-on
   const results = await lookupPart('tile 1 x 2', 'k', fakeRebrickable());
   assert.deepEqual(results.map((r) => r.partNum), ['3069']);
 });
+
+test("BrickLink's catalog pictures for a part number, large first", async () => {
+  const { brickLinkImages } = await import('../js/identify.js');
+  assert.deepEqual(brickLinkImages('3069b'), [
+    'https://img.bricklink.com/ItemImage/PL/3069b.png',
+    'https://img.bricklink.com/ItemImage/PN/11/3069b.png',
+    'https://img.bricklink.com/ItemImage/PN/1/3069b.png',
+    'https://img.bricklink.com/ItemImage/PN/86/3069b.png',
+  ]);
+  assert.deepEqual(brickLinkImages(''), []);
+  assert.match(brickLinkImages('a/b')[0], /a%2Fb/);
+});

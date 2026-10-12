@@ -5,6 +5,17 @@
 const BRICKOGNIZE_URL = 'https://api.brickognize.com/predict/parts/';
 const REBRICKABLE_URL = 'https://rebrickable.com/api/v3/lego';
 
+/**
+ * BrickLink's catalog pictures for a part number, best first: the large picture,
+ * then the part in black, white and light grey. Used when a part has no picture of
+ * its own; the page tries each in turn (a missing one just fails to load).
+ */
+export function brickLinkImages(num) {
+  const n = encodeURIComponent(String(num ?? '').trim());
+  if (!n) return [];
+  return [`https://img.bricklink.com/ItemImage/PL/${n}.png`, ...[11, 1, 86].map((c) => `https://img.bricklink.com/ItemImage/PN/${c}/${n}.png`)];
+}
+
 export function parseBrickognize(json) {
   const items = Array.isArray(json?.items) ? json.items : [];
   return items.map((item) => ({
